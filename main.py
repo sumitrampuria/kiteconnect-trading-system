@@ -24,11 +24,21 @@ try:
         data_start_row=8  # Data starts from row 8
     )
 
-    # Treat row 8 (first data row) as the BASE ACCOUNT
-    if accounts:
+    # Determine base account from "Copy Trades" column (value = "Base")
+    # If no account has "Copy Trades" = "Base", default to first account
+    base_account_found = False
+    for account in accounts:
+        copy_trades = str(account.get('copy_trades', '')).strip().upper()
+        if copy_trades == 'BASE':
+            account["is_base_account"] = True
+            base_account_found = True
+        else:
+            account["is_base_account"] = False
+    
+    # If no account marked as "Base", default to first account
+    if not base_account_found and accounts:
         accounts[0]["is_base_account"] = True
-    for idx in range(1, len(accounts)):
-        accounts[idx]["is_base_account"] = False
+        print("⚠️  Warning: No account found with 'Copy Trades' = 'Base'. Using first account as base.")
 
     def display_account_name(account: dict) -> str:
         name = account.get("account_holder_name", "Unknown")
@@ -78,46 +88,8 @@ try:
         
 except Exception as e:
     print(f"Failed to read from Google Sheets: {e}")
-    print("Falling back to local credentials...")
-    # Fallback to local credentials if Google Sheets fails
-    try:
-        with open("credentials.txt", "r") as cred_file:
-            raw = cred_file.read().strip()
-        api_key_val = None
-        api_secret_val = None
-        for line in raw.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            if "=" in stripped:
-                key, value = stripped.split("=", 1)
-                key = key.strip().lower()
-                value = value.strip()
-                if key == "api_key":
-                    api_key_val = value
-                elif key == "api_secret":
-                    api_secret_val = value
-        if not api_key_val or not api_secret_val:
-            raise ValueError("credentials.txt is missing api_key or api_secret")
-        login_credential = {
-            "api_key": api_key_val,
-            "api_secret": api_secret_val
-        }
-        # Create a single-account array for consistency
-        accounts = [{
-            "account_holder_name": "Local",
-            "account_kite_id": "N/A",
-            "api_key": api_key_val,
-            "api_secret": api_secret_val,
-            "request_url_by_zerodha": None,
-            "is_base_account": True
-        }]
-        def display_account_name(account: dict) -> str:
-            name = account.get("account_holder_name", "Unknown")
-            return f"BASE ACCOUNT {name}" if account.get("is_base_account") else name
-    except Exception as e2:
-        print(f"Failed to load credentials from credentials.txt: {e2}")
-        sys.exit(1)
+    print("Please ensure Google Sheets is accessible and service account is configured correctly.")
+    sys.exit(1)
 
 
 # Helper function to get account status for display
@@ -128,9 +100,10 @@ def get_account_status(account):
     Returns:
         str: "BASE ACCOUNT", "Sync On", or "Sync Off"
     """
-    if account.get('is_base_account'):
+    copy_trades = str(account.get('copy_trades', '')).strip().upper()
+    if copy_trades == 'BASE' or account.get('is_base_account'):
         return "BASE ACCOUNT"
-    elif str(account.get('copy_trades', '')).strip().upper() == 'YES':
+    elif copy_trades == 'YES':
         return "Sync On"
     else:
         return "Sync Off"

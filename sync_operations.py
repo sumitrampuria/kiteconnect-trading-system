@@ -92,6 +92,90 @@ def get_base_account_positions(base_account):
         return []
 
 
+def get_target_account_open_positions(target_account):
+    """Get open NFO/BFO positions from target account."""
+    kite = target_account.get('kite')
+    if not kite:
+        return []
+    
+    try:
+        positions = kite.positions()
+        net_positions = positions.get('net', [])
+        open_positions = [
+            pos for pos in net_positions
+            if pos.get('quantity', 0) != 0
+            and pos.get('exchange', '').upper() in ['NFO', 'BFO']
+        ]
+        return open_positions
+    except Exception as e:
+        print(f"✗ Error fetching target account positions: {e}")
+        return []
+
+
+def close_position_in_account(position, target_account):
+    """Close a position in target account (sell if long, buy if short)."""
+    kite = target_account.get('kite')
+    if not kite:
+        return False
+    
+    symbol = position.get('tradingsymbol', '')
+    exchange = position.get('exchange', '').upper()
+    current_qty = position.get('quantity', 0)
+    
+    if not symbol or not exchange or current_qty == 0:
+        return False
+    
+    # Determine transaction type: if quantity is positive (long), we need to SELL to close
+    # If quantity is negative (short), we need to BUY to close
+    if current_qty > 0:
+        transaction_type = "SELL"
+        order_qty = abs(current_qty)
+    else:
+        transaction_type = "BUY"
+        order_qty = abs(current_qty)
+    
+    # Round to lot size
+    order_qty_rounded = round_to_lot_size(order_qty, exchange)
+    if order_qty_rounded == 0:
+        print(f"    ✓ Position already closed or too small to trade")
+        return True
+    
+    # Get LTP
+    ltp = position.get('last_price', 0)
+    if ltp <= 0:
+        try:
+            quote_key = f"{exchange}:{symbol}"
+            quote_data = kite.quote([quote_key])
+            if quote_data and quote_key in quote_data:
+                ltp = quote_data[quote_key].get('last_price', 0)
+        except:
+            pass
+    
+    if ltp <= 0:
+        print(f"    ✗ Cannot close position: Invalid LTP")
+        return False
+    
+    # Place order to close position
+    try:
+        order_result = kite.place_order(
+            variety="regular",
+            exchange=exchange,
+            tradingsymbol=symbol,
+            transaction_type=transaction_type,
+            order_type="MARKET",
+            quantity=order_qty_rounded,
+            product="NRML",
+            validity="DAY"
+        )
+        
+        print(f"    ✓ Order placed to close: {transaction_type} {order_qty_rounded} @ MARKET")
+        print(f"      Order ID: {order_result}")
+        return True
+    except Exception as e:
+        print(f"    ✗ Failed to close position: {e}")
+        return False
+
+
 def get_total_margin(account):
     """Get total margin for an account."""
     kite = account.get('kite')
@@ -263,9 +347,10 @@ def get_positions_for_account(account):
 
 def get_account_sync_status(account):
     """Get sync status for an account."""
-    if account.get('is_base_account'):
+    copy_trades = str(account.get('copy_trades', '')).strip().upper()
+    if copy_trades == 'BASE' or account.get('is_base_account'):
         return "BASE"
-    elif str(account.get('copy_trades', '')).strip().upper() == 'YES':
+    elif copy_trades == 'YES':
         return "SYNCED"
     else:
         return "NOT SYNCED"
@@ -360,13 +445,22 @@ def run_sync_operations():
             data_start_row=8
         )
         
-        # Mark base account
-        if accounts:
-            accounts[0]["is_base_account"] = True
-        for idx in range(1, len(accounts)):
-            accounts[idx]["is_base_account"] = False
+        # Determine base account from "Copy Trades" column (value = "Base")
+        # If no account has "Copy Trades" = "Base", default to first account
+        base_account_found = False
+        for account in accounts:
+            copy_trades = str(account.get('copy_trades', '')).strip().upper()
+            if copy_trades == 'BASE':
+                account["is_base_account"] = True
+                base_account_found = True
+            else:
+                account["is_base_account"] = False
         
-        # Default copy_trades if not found
+        # If no account marked as "Base", default to first account
+        if not base_account_found and accounts:
+            accounts[0]["is_base_account"] = True
+        
+        # Default copy_trades if not found (but preserve "Base" if already set)
         for account in accounts:
             if account.get('copy_trades') is None or account.get('copy_trades') == '':
                 account['copy_trades'] = 'NO'
@@ -393,58 +487,107 @@ def run_sync_operations():
     # Get base positions
     base_positions = get_base_account_positions(base_account)
     
-    if not base_positions:
-        print("✓ No open NFO/BFO positions in base account to mimic")
+    # Find target accounts
+    target_accounts = [
+        acc for acc in accounts
+        if not acc.get('is_base_account')
+        and acc.get('kite')
+        and str(acc.get('copy_trades', '')).strip().upper() == 'YES'
+    ]
+    
+    if not target_accounts:
+        print("✓ No target accounts with 'Copy Trades' = 'YES'")
     else:
-        print(f"✓ Found {len(base_positions)} open NFO/BFO position(s) in base account")
+        print(f"✓ Found {len(target_accounts)} target account(s) for position syncing")
         
-        # Get base total margin
-        base_total_margin = get_total_margin(base_account)
-        if not base_total_margin or base_total_margin <= 0:
-            print("✗ Cannot calculate proportional quantities: Base account total margin is invalid")
+        if not base_positions:
+            print("✓ No open NFO/BFO positions in base account - closing all positions in synced accounts")
         else:
+            print(f"✓ Found {len(base_positions)} open NFO/BFO position(s) in base account")
+        
+        # Get base total margin (needed for proportional calculations)
+        base_total_margin = get_total_margin(base_account)
+        if base_total_margin and base_total_margin > 0:
             print(f"✓ Base account total margin: ₹{base_total_margin/1e7:.4f} Cr")
+        elif base_positions:
+            print("⚠️  Warning: Base account total margin is invalid - cannot calculate proportional quantities")
+        
+        # Process each target account
+        for target_account in target_accounts:
+            target_name = display_account_name(target_account)
+            print(f"\n{'─'*80}")
+            print(f"SYNCING POSITIONS IN: {target_name}")
+            print(f"{'─'*80}")
             
-            # Find target accounts
-            target_accounts = [
-                acc for acc in accounts
-                if not acc.get('is_base_account')
-                and acc.get('kite')
-                and str(acc.get('copy_trades', '')).strip().upper() == 'YES'
-            ]
+            target_total_margin = get_total_margin(target_account)
+            if not target_total_margin or target_total_margin <= 0:
+                print(f"  ✗ Cannot sync: Invalid total margin")
+                continue
             
-            if target_accounts:
-                print(f"✓ Found {len(target_accounts)} target account(s) for position mimicking")
+            print(f"  Target total margin: ₹{target_total_margin/1e7:.4f} Cr")
+            if base_total_margin and base_total_margin > 0:
+                print(f"  Proportionality ratio: {target_total_margin/base_total_margin:.4f}")
+            
+            # Step 1: Close positions that exist in target but NOT in base account
+            target_open_positions = get_target_account_open_positions(target_account)
+            
+            # Create a set of base position keys (symbol+exchange) for quick lookup
+            base_position_keys = set()
+            for base_pos in base_positions:
+                symbol = base_pos.get('tradingsymbol', '').upper()
+                exchange = base_pos.get('exchange', '').upper()
+                if symbol and exchange:
+                    base_position_keys.add(f"{exchange}:{symbol}")
+            
+            # Find positions to close (in target but not in base)
+            # If base has no positions, close ALL positions in target
+            positions_to_close = []
+            for target_pos in target_open_positions:
+                symbol = target_pos.get('tradingsymbol', '').upper()
+                exchange = target_pos.get('exchange', '').upper()
+                if symbol and exchange:
+                    pos_key = f"{exchange}:{symbol}"
+                    # Close if base has no positions OR if this position is not in base
+                    if not base_positions or pos_key not in base_position_keys:
+                        positions_to_close.append(target_pos)
+            
+            if positions_to_close:
+                print(f"\n  Closing {len(positions_to_close)} position(s) not in base account:")
+                closed_count = 0
+                for pos_to_close in positions_to_close:
+                    symbol = pos_to_close.get('tradingsymbol', 'N/A')
+                    exchange = pos_to_close.get('exchange', 'N/A')
+                    qty = pos_to_close.get('quantity', 0)
+                    print(f"\n  Closing: {symbol} ({exchange}) - Current quantity: {qty}")
+                    if close_position_in_account(pos_to_close, target_account):
+                        closed_count += 1
+                print(f"\n  ✓ Closed {closed_count}/{len(positions_to_close)} positions")
+            else:
+                if base_positions:
+                    print(f"\n  ✓ No positions to close (all target positions exist in base account)")
+                else:
+                    print(f"\n  ✓ No positions to close (target account has no open positions)")
+            
+            # Step 2: Sync positions that exist in base account (add/update)
+            if base_positions and base_total_margin and base_total_margin > 0:
+                print(f"\n  Syncing {len(base_positions)} position(s) from base account:")
+                success_count = 0
+                for base_pos in base_positions:
+                    symbol = base_pos.get('tradingsymbol', 'N/A')
+                    exchange = base_pos.get('exchange', 'N/A')
+                    base_qty = base_pos.get('quantity', 0)
+                    
+                    print(f"\n  Syncing: {symbol} ({exchange})")
+                    print(f"    Base quantity: {base_qty}")
+                    
+                    if mimic_position_in_account(base_pos, target_account, base_total_margin, target_total_margin):
+                        success_count += 1
                 
-                # Mimic positions
-                for target_account in target_accounts:
-                    target_name = display_account_name(target_account)
-                    print(f"\n{'─'*80}")
-                    print(f"MIMICKING POSITIONS IN: {target_name}")
-                    print(f"{'─'*80}")
-                    
-                    target_total_margin = get_total_margin(target_account)
-                    if not target_total_margin or target_total_margin <= 0:
-                        print(f"  ✗ Cannot mimic: Invalid total margin")
-                        continue
-                    
-                    print(f"  Target total margin: ₹{target_total_margin/1e7:.4f} Cr")
-                    print(f"  Proportionality ratio: {target_total_margin/base_total_margin:.4f}")
-                    
-                    success_count = 0
-                    for base_pos in base_positions:
-                        symbol = base_pos.get('tradingsymbol', 'N/A')
-                        exchange = base_pos.get('exchange', 'N/A')
-                        base_qty = base_pos.get('quantity', 0)
-                        
-                        print(f"\n  Mimicking: {symbol} ({exchange})")
-                        print(f"    Base quantity: {base_qty}")
-                        
-                        if mimic_position_in_account(base_pos, target_account, base_total_margin, target_total_margin):
-                            success_count += 1
-                    
-                    print(f"\n  ✓ Successfully processed {success_count}/{len(base_positions)} positions")
-                    print(f"{'─'*80}")
+                print(f"\n  ✓ Successfully processed {success_count}/{len(base_positions)} positions")
+            elif base_positions:
+                print(f"\n  ⚠️  Cannot sync positions: Base account total margin is invalid")
+            
+            print(f"{'─'*80}")
     
     # Print updated positions
     print("\n" + "="*80)

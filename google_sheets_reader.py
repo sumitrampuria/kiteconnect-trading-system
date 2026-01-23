@@ -385,7 +385,6 @@ def get_all_accounts_from_google_sheet(
             for name in possible_names:
                 if name in header_lower or header_lower in name:
                     column_indices[key] = idx
-                    print(f"  Found '{key}' column at index {idx}: '{header}'")
                     break
             if column_indices[key] is not None:
                 break
@@ -400,9 +399,7 @@ def get_all_accounts_from_google_sheet(
         )
     
     # Log if copy_trades column was found
-    if column_indices.get('copy_trades') is not None:
-        print(f"  Found 'copy_trades' column at index {column_indices['copy_trades']}")
-    else:
+    if column_indices.get('copy_trades') is None:
         print(f"  ⚠️  'Copy Trades' column not found - will default to 'NO' for all accounts")
     
     # Read all data rows starting from data_start_row

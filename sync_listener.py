@@ -14,6 +14,8 @@ import subprocess
 SPREADSHEET_ID = "1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4"
 GID = 736151233
 TRIGGER_COLUMN_NAME = "Sync Trigger"  # Column name in Google Sheet
+TRADING_MECHANISM_ROW = 4  # Row 4 contains "Trading Mechanism" setting
+TRADING_MECHANISM_COLUMN_NAME = "Trading Mechanism"  # Column name for trading mechanism
 POLL_INTERVAL = 5  # Check every 5 seconds
 TRIGGER_ROW = 7  # Header row where trigger column should be
 TRIGGER_VALUES = ["TRIGGER", "SYNC", "RUN", "1", "YES"]  # Values that trigger sync
@@ -63,6 +65,70 @@ def find_trigger_column(worksheet, header_row=7):
         return None
 
 
+def find_trading_mechanism_column(worksheet, row=4):
+    """Find the column index for the Trading Mechanism column in row 4."""
+    try:
+        row_values = worksheet.row_values(row)
+        for idx, value in enumerate(row_values):
+            if value and TRADING_MECHANISM_COLUMN_NAME.lower() in str(value).lower():
+                # The value itself is the header, return the next column (where the value should be)
+                # Actually, we need to find where the value "Button Based" or "Auto" is
+                # Let's search for a column header that matches
+                return idx + 1  # gspread uses 1-indexed
+        return None
+    except Exception as e:
+        print(f"Error finding trading mechanism column: {e}")
+        return None
+
+
+def get_trading_mechanism(worksheet):
+    """Get the Trading Mechanism value from row 4, specifically checking cell B4 (column 2)."""
+    try:
+        # Method 1: Directly read cell B4 (row 4, column 2)
+        try:
+            cell_b4 = worksheet.cell(TRADING_MECHANISM_ROW, 2).value  # B4 = row 4, column 2
+            if cell_b4:
+                value_upper = str(cell_b4).strip().upper()
+                if value_upper in ["BUTTON BASED", "AUTO"]:
+                    return value_upper
+        except:
+            pass
+        
+        # Method 2: Read entire row 4 and search for the value
+        row_values = worksheet.row_values(TRADING_MECHANISM_ROW)
+        
+        # First, try to find "Trading Mechanism" header and get value from adjacent cell
+        for idx, value in enumerate(row_values):
+            if value and TRADING_MECHANISM_COLUMN_NAME.lower() in str(value).lower():
+                # Found the header, check the next column for the value
+                if idx + 1 < len(row_values):
+                    next_value = row_values[idx + 1]
+                    if next_value and str(next_value).strip().upper() in ["BUTTON BASED", "AUTO"]:
+                        return str(next_value).strip().upper()
+                
+                # If not in next column, try a few columns to the right
+                try:
+                    for check_col in range(idx + 2, min(idx + 6, len(row_values) + 1)):
+                        if check_col <= len(row_values):
+                            check_value = row_values[check_col - 1] if check_col - 1 < len(row_values) else ""
+                            if check_value and str(check_value).strip().upper() in ["BUTTON BASED", "AUTO"]:
+                                return str(check_value).strip().upper()
+                except:
+                    pass
+        
+        # Method 3: Fallback - search all of row 4 for "Button Based" or "Auto" values
+        for value in row_values:
+            if value:
+                value_upper = str(value).strip().upper()
+                if value_upper in ["BUTTON BASED", "AUTO"]:
+                    return value_upper
+        
+        return None
+    except Exception as e:
+        # Silently return None on error (will default to button-based)
+        return None
+
+
 def check_trigger(worksheet, trigger_col, data_start_row=8):
     """Check if trigger is activated in any account row."""
     try:
@@ -84,17 +150,12 @@ def clear_trigger(worksheet, row_num, trigger_col):
     """Clear the trigger after processing."""
     try:
         worksheet.update_cell(row_num, trigger_col, "")
-        print(f"✓ Cleared trigger in row {row_num}")
     except Exception as e:
         print(f"Error clearing trigger: {e}")
 
 
 def run_sync():
     """Run the position sync process by executing sync_operations.py."""
-    print("\n" + "="*80)
-    print(f"SYNC TRIGGERED AT: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*80)
-    
     try:
         # Run the sync_operations.py script which handles syncing (lightweight, no verbose init)
         script_path = os.path.join(os.path.dirname(__file__), 'sync_operations.py')
@@ -117,10 +178,6 @@ def main_listener_loop():
     print("="*80)
     print("GOOGLE SHEETS SYNC LISTENER")
     print("="*80)
-    print(f"Polling interval: {POLL_INTERVAL} seconds")
-    print(f"Trigger column: {TRIGGER_COLUMN_NAME}")
-    print(f"Trigger values: {', '.join(TRIGGER_VALUES)}")
-    print("="*80)
     print("\nListening for sync triggers...")
     print("(Press Ctrl+C to stop)\n")
     
@@ -135,41 +192,150 @@ def main_listener_loop():
     else:
         worksheet = spreadsheet.sheet1
     
-    trigger_col = find_trigger_column(worksheet, TRIGGER_ROW)
+    # Get trading mechanism once at startup - this will be the mode for the entire lifecycle
+    trading_mechanism = get_trading_mechanism(worksheet)
     
-    if not trigger_col:
-        print(f"⚠️  Warning: '{TRIGGER_COLUMN_NAME}' column not found in row {TRIGGER_ROW}")
-        print("   Please add a column named 'Sync Trigger' in your Google Sheet")
-        print("   The listener will continue but won't detect triggers.")
-        print("   You can add the column later and restart the listener.\n")
+    # Determine and print the mode
+    if trading_mechanism == "AUTO":
+        print(f"✓ Trading Mechanism: AUTO")
+        print("  - First sync will run immediately")
+        print("  - Subsequent syncs will run at seconds = 0 and seconds = 30 of each minute\n")
+    elif trading_mechanism == "BUTTON BASED":
+        print(f"✓ Trading Mechanism: BUTTON BASED")
+        print("  - Sync will only run when button is clicked\n")
+    else:
+        # Unknown or missing - default to button-based
+        trading_mechanism = "BUTTON BASED"
+        print(f"⚠️  Trading Mechanism not found in row 4 (cell B4)")
+        print(f"  - Defaulting to: BUTTON BASED")
+        print("  - Sync will only run when button is clicked\n")
+    
+    # Only check for Sync Trigger column if we're in Button Based mode
+    trigger_col = None
+    if trading_mechanism == "BUTTON BASED":
+        trigger_col = find_trigger_column(worksheet, TRIGGER_ROW)
+        
+        if not trigger_col:
+            print(f"⚠️  Warning: '{TRIGGER_COLUMN_NAME}' column not found in row {TRIGGER_ROW}")
+            print("   Please add a column named 'Sync Trigger' in your Google Sheet")
+            print("   The listener will continue but won't detect button-based triggers.")
+            print("   You can add the column later and restart the listener.\n")
     
     last_trigger_time = None
     last_trigger_row = None
+    last_auto_trigger_minute = None  # Track last minute when auto trigger fired
+    last_auto_trigger_second = None  # Track last second (0 or 30) when auto trigger fired
+    first_auto_trigger_done = False  # Track if first trigger has been executed
     
     try:
         while True:
-            if trigger_col:
-                row_num, trigger_value = check_trigger(worksheet, trigger_col, data_start_row=8)
+            # Use the trading mechanism determined at startup (not re-checking)
+            
+            if trading_mechanism == "AUTO":
+                # AUTO mode: First trigger happens immediately, then at end of each minute
+                current_time = datetime.datetime.now()
+                current_minute = current_time.minute
+                current_second = current_time.second
                 
-                if row_num and (row_num != last_trigger_row or time.time() - (last_trigger_time or 0) > 10):
-                    # New trigger detected
-                    current_time = time.time()
-                    print(f"\n🔔 Trigger detected in row {row_num}: '{trigger_value}'")
-                    clear_trigger(worksheet, row_num, trigger_col)
+                # First trigger: execute immediately on startup (only for AUTO mode)
+                if not first_auto_trigger_done:
+                    print(f"\n🔄 Auto trigger (first run) at {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    first_auto_trigger_done = True
+                    last_auto_trigger_minute = current_minute
                     
                     # Run sync
                     success = run_sync()
                     
                     if success:
-                        print("\n✓ Sync completed successfully")
+                        print("\n✓ Auto sync completed successfully")
                     else:
-                        print("\n✗ Sync completed with errors")
+                        print("\n✗ Auto sync completed with errors")
                     
-                    last_trigger_time = current_time
-                    last_trigger_row = row_num
                     print("\n" + "="*80)
-                    print("Resuming listener... (Press Ctrl+C to stop)")
+                    print("Resuming auto listener... (Press Ctrl+C to stop)")
                     print("="*80 + "\n")
+                
+                # Subsequent triggers: at seconds = 0 and seconds = 30 of each minute
+                # Check if we're at 0 or 30 seconds and haven't triggered for this second yet
+                elif (current_second == 0 or current_second == 30) and \
+                     (current_minute != last_auto_trigger_minute or current_second != last_auto_trigger_second):
+                    print(f"\n🔄 Auto trigger at {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    last_auto_trigger_minute = current_minute
+                    last_auto_trigger_second = current_second
+                    
+                    # Run sync
+                    success = run_sync()
+                    
+                    if success:
+                        print("\n✓ Auto sync completed successfully")
+                    else:
+                        print("\n✗ Auto sync completed with errors")
+                    
+                    print("\n" + "="*80)
+                    print("Resuming auto listener... (Press Ctrl+C to stop)")
+                    print("="*80 + "\n")
+                
+                # Use shorter polling interval for AUTO mode to catch second 0 more accurately
+                time.sleep(1)  # Check every 1 second in AUTO mode for precision
+                continue  # Skip the default sleep at the end
+            
+            elif trading_mechanism == "BUTTON BASED":
+                # Button-based mode: Only trigger when button is clicked (no auto trigger)
+                # Reset first_auto_trigger_done flag in case mode switches back to AUTO later
+                first_auto_trigger_done = False
+                
+                # Check for button trigger
+                if trigger_col:
+                    row_num, trigger_value = check_trigger(worksheet, trigger_col, data_start_row=8)
+                    
+                    if row_num and (row_num != last_trigger_row or time.time() - (last_trigger_time or 0) > 10):
+                        # New trigger detected
+                        current_time = time.time()
+                        clear_trigger(worksheet, row_num, trigger_col)
+                        
+                        # Run sync
+                        success = run_sync()
+                        
+                        if success:
+                            print("\n✓ Sync completed successfully")
+                        else:
+                            print("\n✗ Sync completed with errors")
+                        
+                        last_trigger_time = current_time
+                        last_trigger_row = row_num
+                        print("\n" + "="*80)
+                        print("Resuming listener... (Press Ctrl+C to stop)")
+                        print("="*80 + "\n")
+                
+                # Use shorter polling interval for Button Based mode to reduce lag
+                time.sleep(1)  # Check every 1 second for faster trigger detection
+                continue  # Skip the default sleep at the end
+            else:
+                # This should not happen since we set trading_mechanism to "BUTTON BASED" at startup if unknown
+                # But keeping this as a safety fallback
+                # Reset first_auto_trigger_done flag
+                first_auto_trigger_done = False
+                
+                # Check for button trigger
+                if trigger_col:
+                    row_num, trigger_value = check_trigger(worksheet, trigger_col, data_start_row=8)
+                    
+                    if row_num and (row_num != last_trigger_row or time.time() - (last_trigger_time or 0) > 10):
+                        current_time = time.time()
+                        clear_trigger(worksheet, row_num, trigger_col)
+                        
+                        success = run_sync()
+                        
+                        if success:
+                            print("\n✓ Sync completed successfully")
+                        else:
+                            print("\n✗ Sync completed with errors")
+                        
+                        last_trigger_time = current_time
+                        last_trigger_row = row_num
+                        print("\n" + "="*80)
+                        print("Resuming listener... (Press Ctrl+C to stop)")
+                        print("="*80 + "\n")
             
             time.sleep(POLL_INTERVAL)
             
