@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+"""
+Sync operations module - called on each trigger.
+Contains only the sync logic and position printing (no verbose initialization).
+"""
+import json
+import datetime
+import os
+import sys
+import math
+import urllib.parse
+from kiteconnect import KiteConnect, KiteTicker
+from google_sheets_reader import get_all_accounts_from_google_sheet
+
+# Import shared functions from main_copy
+# We'll need to import or redefine the necessary functions
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def _safe_float(val):
+    try:
+        return float(val)
+    except Exception:
+        return None
+
+
+def display_account_name(account: dict) -> str:
+    name = account.get("account_holder_name", "Unknown")
+    return f"BASE ACCOUNT {name}" if account.get("is_base_account") else name
+
+
+def initialize_kite_quiet(account):
+    """Quick, quiet initialization of KiteConnect (no verbose output)."""
+    account_kite_id = account.get('account_kite_id', 'Unknown')
+    api_key = account.get('api_key')
+    api_secret = account.get('api_secret')
+    
+    if not api_key or not api_secret:
+        return None
+    
+    try:
+        kite = KiteConnect(api_key=api_key)
+        access_token_file = f"AccessToken/{account_kite_id}_{datetime.datetime.now().date()}.json"
+        
+        if os.path.exists(access_token_file):
+            with open(access_token_file, "r") as f:
+                access_token = json.load(f)
+            kite.set_access_token(access_token)
+            return kite
+        else:
+            # Try to get from request URL if available
+            request_url = account.get('request_url_by_zerodha')
+            if request_url and request_url != 'None' and 'request_token=' in request_url:
+                try:
+                    parsed_url = urllib.parse.urlparse(request_url)
+                    params = urllib.parse.parse_qs(parsed_url.query)
+                    if 'request_token' in params:
+                        request_token = params['request_token'][0]
+                        access_token = kite.generate_session(
+                            request_token=request_token,
+                            api_secret=api_secret
+                        )['access_token']
+                        os.makedirs("AccessToken", exist_ok=True)
+                        with open(access_token_file, "w") as f:
+                            json.dump(access_token, f)
+                        kite.set_access_token(access_token)
+                        return kite
+                except:
+                    pass
+        return None
+    except:
+        return None
+
+
+def get_base_account_positions(base_account):
+    """Get open NFO/BFO positions from base account."""
+    kite = base_account.get('kite')
+    if not kite:
+        return []
+    
+    try:
+        positions = kite.positions()
+        net_positions = positions.get('net', [])
+        open_positions = [
+            pos for pos in net_positions
+            if pos.get('quantity', 0) != 0
+            and pos.get('exchange', '').upper() in ['NFO', 'BFO']
+        ]
+        return open_positions
+    except Exception as e:
+        print(f"✗ Error fetching base account positions: {e}")
+        return []
+
+
+def get_total_margin(account):
+    """Get total margin for an account."""
+    kite = account.get('kite')
+    if not kite:
+        return None
+    
+    try:
+        margins = kite.margins()
+        equity = margins.get('equity', {})
+        available = _safe_float(equity.get('net'))
+        used = _safe_float(equity.get('utilised', {}).get('debits'))
+        
+        if available is not None and used is not None:
+            return available + used
+        return None
+    except Exception as e:
+        return None
+
+
+# Load lot sizes
+try:
+    with open("lot_sizes_config.json", "r") as f:
+        lot_sizes_config = json.load(f)
+    lot_sizes = lot_sizes_config.get("lot_sizes", {})
+except:
+    lot_sizes = {"NFO": 65, "BFO": 20}
+
+NFO_LOT_SIZE = lot_sizes.get("NFO", 65)
+BFO_LOT_SIZE = lot_sizes.get("BFO", 20)
+
+
+def round_to_lot_size(quantity, exchange):
+    """Round quantity UP to next multiple of lot size."""
+    lot_size = NFO_LOT_SIZE if exchange.upper() == "NFO" else BFO_LOT_SIZE
+    if lot_size <= 0:
+        return 0
+    if quantity <= 0:
+        return 0
+    rounded = math.ceil(quantity / lot_size) * lot_size
+    return int(rounded)
+
+
+def get_current_position_quantity(kite, symbol, exchange):
+    """Get current position quantity for a symbol."""
+    try:
+        positions = kite.positions()
+        net_positions = positions.get('net', [])
+        
+        for pos in net_positions:
+            if (pos.get('tradingsymbol', '').upper() == symbol.upper() and 
+                pos.get('exchange', '').upper() == exchange.upper()):
+                return pos.get('quantity', 0)
+        return 0
+    except:
+        return 0
+
+
+def mimic_position_in_account(base_position, target_account, base_total_margin, target_total_margin):
+    """Mimic position with delta trading."""
+    copy_trades = str(target_account.get('copy_trades', '')).strip().upper()
+    if copy_trades != 'YES':
+        return False
+    
+    kite = target_account.get('kite')
+    if not kite:
+        return False
+    
+    symbol = base_position.get('tradingsymbol', '')
+    exchange = base_position.get('exchange', '').upper()
+    base_quantity = base_position.get('quantity', 0)
+    
+    if not symbol or not exchange or base_quantity == 0:
+        return False
+    
+    # Calculate intended proportional quantity
+    if base_total_margin and base_total_margin > 0:
+        intended_proportional_qty = (target_total_margin / base_total_margin) * abs(base_quantity)
+    else:
+        intended_proportional_qty = 0
+    
+    intended_qty = round_to_lot_size(intended_proportional_qty, exchange)
+    if intended_qty == 0:
+        return False
+    
+    # Get current position
+    current_qty = get_current_position_quantity(kite, symbol, exchange)
+    
+    # Calculate delta
+    base_sign = 1 if base_quantity >= 0 else -1
+    intended_qty_signed = intended_qty * base_sign
+    delta_qty = intended_qty_signed - current_qty
+    
+    print(f"  {symbol} ({exchange}):")
+    print(f"    Base quantity: {base_quantity}")
+    print(f"    Intended proportional quantity: {intended_qty_signed}")
+    print(f"    Current quantity in target: {current_qty}")
+    print(f"    Delta needed: {delta_qty}")
+    
+    # Check if trade needed
+    lot_size = NFO_LOT_SIZE if exchange == "NFO" else BFO_LOT_SIZE
+    if abs(delta_qty) < lot_size:
+        print(f"    ✓ Already at target position (delta < lot size). No trade needed.")
+        return True
+    
+    # Round delta to lot size
+    delta_qty_rounded = round_to_lot_size(abs(delta_qty), exchange)
+    if delta_qty < 0:
+        delta_qty_rounded = -delta_qty_rounded
+    
+    if delta_qty_rounded == 0:
+        print(f"    ✓ Already at target position. No trade needed.")
+        return True
+    
+    # Determine transaction type
+    if delta_qty_rounded > 0:
+        transaction_type = "BUY"
+        order_qty = abs(delta_qty_rounded)
+    else:
+        transaction_type = "SELL"
+        order_qty = abs(delta_qty_rounded)
+    
+    # Get LTP
+    ltp = base_position.get('last_price', 0)
+    if ltp <= 0:
+        try:
+            quote_key = f"{exchange}:{symbol}"
+            quote_data = kite.quote([quote_key])
+            if quote_data and quote_key in quote_data:
+                ltp = quote_data[quote_key].get('last_price', 0)
+        except:
+            pass
+    
+    if ltp <= 0:
+        print(f"    ✗ Cannot place order: Invalid LTP")
+        return False
+    
+    # Place order
+    try:
+        order_result = kite.place_order(
+            variety="regular",
+            exchange=exchange,
+            tradingsymbol=symbol,
+            transaction_type=transaction_type,
+            order_type="MARKET",
+            quantity=order_qty,
+            product="NRML",
+            validity="DAY"
+        )
+        
+        print(f"    ✓ Order placed: {transaction_type} {order_qty} @ MARKET (delta trade)")
+        print(f"      Order ID: {order_result}")
+        return True
+    except Exception as e:
+        print(f"    ✗ Failed to place order: {e}")
+        return False
+
+
+def get_positions_for_account(account):
+    """Fetch positions for an account."""
+    kite = account.get('kite')
+    if not kite:
+        return None
+    
+    try:
+        return kite.positions()
+    except:
+        return None
+
+
+def get_account_sync_status(account):
+    """Get sync status for an account."""
+    if account.get('is_base_account'):
+        return "BASE"
+    elif str(account.get('copy_trades', '')).strip().upper() == 'YES':
+        return "SYNCED"
+    else:
+        return "NOT SYNCED"
+
+
+def print_positions_after_sync(account, positions):
+    """Print positions with account sync status."""
+    account_name = display_account_name(account)
+    account_kite_id = account.get('account_kite_id', 'Unknown')
+    sync_status = get_account_sync_status(account)
+    
+    print(f"\n{'─'*80}")
+    print(f"POSITIONS FOR: {account_name} ({account_kite_id}) - [{sync_status}]")
+    print(f"{'─'*80}")
+    
+    if not positions:
+        print("  No positions data available")
+        return
+    
+    net_positions = positions.get('net', [])
+    if not net_positions:
+        print("  ✓ No positions")
+        return
+    
+    # Filter for NFO/BFO only
+    all_positions = [pos for pos in net_positions if pos.get('exchange', '').upper() in ['NFO', 'BFO']]
+    
+    if not all_positions:
+        print("  ✓ No positions in NFO/BFO exchanges")
+        return
+    
+    open_positions = [pos for pos in all_positions if pos.get('quantity', 0) != 0]
+    closed_positions = [pos for pos in all_positions if pos.get('quantity', 0) == 0]
+    
+    print(f"\n  Total Positions: {len(all_positions)} (Open: {len(open_positions)}, Closed: {len(closed_positions)})")
+    print(
+        f"\n  {'Status':<8} {'Symbol':<20} {'Exchange':<10} {'Product':<10} "
+        f"{'Quantity':<12} {'Avg Price':<12} {'LTP':<12} {'P&L':<15}"
+    )
+    print(f"  {'-'*8} {'-'*20} {'-'*10} {'-'*10} {'-'*12} {'-'*12} {'-'*12} {'-'*15}")
+    
+    total_pnl = 0
+    for pos in all_positions:
+        symbol = pos.get('tradingsymbol', 'N/A')
+        exchange = pos.get('exchange', 'N/A')
+        product = pos.get('product', 'N/A')
+        quantity = pos.get('quantity', 0)
+        avg_price = pos.get('average_price', 0)
+        ltp = pos.get('last_price', 0)
+        pnl = pos.get('pnl', 0)
+        total_pnl += pnl
+        
+        qty_str = f"{quantity:+.0f}" if quantity != 0 else "0"
+        avg_price_str = f"{avg_price:.2f}" if avg_price else "0.00"
+        ltp_str = f"{ltp:.2f}" if ltp else "0.00"
+        pnl_str = f"₹{pnl:+.2f}" if pnl else "₹0.00"
+        
+        if pnl > 0:
+            pnl_display = f"✓ {pnl_str}"
+        elif pnl < 0:
+            pnl_display = f"✗ {pnl_str}"
+        else:
+            pnl_display = pnl_str
+        
+        status = "OPEN" if quantity != 0 else "CLOSED"
+        print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display:<15}")
+    
+    print(f"\n  {'-'*100}")
+    total_pnl_str = f"₹{total_pnl:+.2f}"
+    if total_pnl > 0:
+        total_pnl_display = f"✓ Total P&L: {total_pnl_str}"
+    elif total_pnl < 0:
+        total_pnl_display = f"✗ Total P&L: {total_pnl_str}"
+    else:
+        total_pnl_display = f"Total P&L: {total_pnl_str}"
+    print(f"  {total_pnl_display}")
+    print(f"{'─'*80}")
+
+
+def run_sync_operations():
+    """Main function to run sync operations (called on each trigger)."""
+    print("\n" + "="*80)
+    print(f"SYNC TRIGGERED AT: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*80)
+    
+    # Load accounts from Google Sheets (quiet mode)
+    try:
+        accounts = get_all_accounts_from_google_sheet(
+            spreadsheet_id="1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4",
+            gid=736151233,
+            header_row=7,
+            data_start_row=8
+        )
+        
+        # Mark base account
+        if accounts:
+            accounts[0]["is_base_account"] = True
+        for idx in range(1, len(accounts)):
+            accounts[idx]["is_base_account"] = False
+        
+        # Default copy_trades if not found
+        for account in accounts:
+            if account.get('copy_trades') is None or account.get('copy_trades') == '':
+                account['copy_trades'] = 'NO'
+    except Exception as e:
+        print(f"✗ Failed to load accounts: {e}")
+        return False
+    
+    # Quick, quiet initialization
+    print("\nReinitializing connections (quiet mode)...")
+    for account in accounts:
+        account['kite'] = initialize_kite_quiet(account)
+    
+    # Get base account
+    base_account = None
+    for account in accounts:
+        if account.get('is_base_account') and account.get('kite'):
+            base_account = account
+            break
+    
+    if not base_account:
+        print("✗ Base account not found or KiteConnect not initialized")
+        return False
+    
+    # Get base positions
+    base_positions = get_base_account_positions(base_account)
+    
+    if not base_positions:
+        print("✓ No open NFO/BFO positions in base account to mimic")
+    else:
+        print(f"✓ Found {len(base_positions)} open NFO/BFO position(s) in base account")
+        
+        # Get base total margin
+        base_total_margin = get_total_margin(base_account)
+        if not base_total_margin or base_total_margin <= 0:
+            print("✗ Cannot calculate proportional quantities: Base account total margin is invalid")
+        else:
+            print(f"✓ Base account total margin: ₹{base_total_margin/1e7:.4f} Cr")
+            
+            # Find target accounts
+            target_accounts = [
+                acc for acc in accounts
+                if not acc.get('is_base_account')
+                and acc.get('kite')
+                and str(acc.get('copy_trades', '')).strip().upper() == 'YES'
+            ]
+            
+            if target_accounts:
+                print(f"✓ Found {len(target_accounts)} target account(s) for position mimicking")
+                
+                # Mimic positions
+                for target_account in target_accounts:
+                    target_name = display_account_name(target_account)
+                    print(f"\n{'─'*80}")
+                    print(f"MIMICKING POSITIONS IN: {target_name}")
+                    print(f"{'─'*80}")
+                    
+                    target_total_margin = get_total_margin(target_account)
+                    if not target_total_margin or target_total_margin <= 0:
+                        print(f"  ✗ Cannot mimic: Invalid total margin")
+                        continue
+                    
+                    print(f"  Target total margin: ₹{target_total_margin/1e7:.4f} Cr")
+                    print(f"  Proportionality ratio: {target_total_margin/base_total_margin:.4f}")
+                    
+                    success_count = 0
+                    for base_pos in base_positions:
+                        symbol = base_pos.get('tradingsymbol', 'N/A')
+                        exchange = base_pos.get('exchange', 'N/A')
+                        base_qty = base_pos.get('quantity', 0)
+                        
+                        print(f"\n  Mimicking: {symbol} ({exchange})")
+                        print(f"    Base quantity: {base_qty}")
+                        
+                        if mimic_position_in_account(base_pos, target_account, base_total_margin, target_total_margin):
+                            success_count += 1
+                    
+                    print(f"\n  ✓ Successfully processed {success_count}/{len(base_positions)} positions")
+                    print(f"{'─'*80}")
+    
+    # Print updated positions
+    print("\n" + "="*80)
+    print("UPDATED POSITIONS AFTER SYNC")
+    print("="*80)
+    
+    for account in accounts:
+        if not account.get('kite'):
+            sync_status = get_account_sync_status(account)
+            print(f"\n{'─'*80}")
+            print(f"POSITIONS FOR: {display_account_name(account)} - [{sync_status}]")
+            print(f"{'─'*80}")
+            print("  ✗ Cannot fetch positions - KiteConnect not initialized")
+            print(f"{'─'*80}")
+            continue
+        
+        try:
+            positions = get_positions_for_account(account)
+            print_positions_after_sync(account, positions)
+        except Exception as e:
+            sync_status = get_account_sync_status(account)
+            print(f"\n{'─'*80}")
+            print(f"POSITIONS FOR: {display_account_name(account)} - [{sync_status}]")
+            print(f"{'─'*80}")
+            print(f"  ✗ Error: {e}")
+            print(f"{'─'*80}")
+    
+    print("\n" + "="*80)
+    print("SYNC OPERATIONS COMPLETE")
+    print("="*80)
+    
+    return True
+
+
+if __name__ == "__main__":
+    run_sync_operations()

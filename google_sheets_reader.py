@@ -367,14 +367,15 @@ def get_all_accounts_from_google_sheet(
     header_row_data = all_values[header_row_idx]
     headers = [str(cell).strip() for cell in header_row_data]
     
-    # Find column indices for the 5 columns we need
+    # Find column indices for the columns we need
     column_indices = {}
     required_columns = {
         'account_holder_name': ['account holder name', 'account holder', 'holder name'],
         'account_kite_id': ['account kite-id', 'kite-id', 'kite id', 'account kite_id'],
         'api_key': ['api_key', 'api key', 'apikey'],
         'api_secret': ['api_secret', 'api secret', 'apisecret'],
-        'request_url_by_zerodha': ['request url by zerodha', 'request url', 'zerodha url']
+        'request_url_by_zerodha': ['request url by zerodha', 'request url', 'zerodha url'],
+        'copy_trades': ['copy trades', 'copy trade', 'copy', 'trades']
     }
     
     for key, possible_names in required_columns.items():
@@ -389,13 +390,20 @@ def get_all_accounts_from_google_sheet(
             if column_indices[key] is not None:
                 break
     
-    # Check if we found all required columns
-    missing_columns = [key for key, idx in column_indices.items() if idx is None]
+    # Check if we found all required columns (copy_trades is optional)
+    required_columns_check = {k: v for k, v in column_indices.items() if k != 'copy_trades'}
+    missing_columns = [key for key, idx in required_columns_check.items() if idx is None]
     if missing_columns:
         raise Exception(
             f"Could not find required columns: {', '.join(missing_columns)}\n"
             f"Found headers: {headers}"
         )
+    
+    # Log if copy_trades column was found
+    if column_indices.get('copy_trades') is not None:
+        print(f"  Found 'copy_trades' column at index {column_indices['copy_trades']}")
+    else:
+        print(f"  ⚠️  'Copy Trades' column not found - will default to 'NO' for all accounts")
     
     # Read all data rows starting from data_start_row
     accounts = []
@@ -409,11 +417,15 @@ def get_all_accounts_from_google_sheet(
         # Extract values for each column
         account = {}
         for key, col_idx in column_indices.items():
-            if col_idx < len(row):
+            if col_idx is not None and col_idx < len(row):
                 value = str(row[col_idx]).strip()
                 account[key] = value if value else None
             else:
                 account[key] = None
+        
+        # Default copy_trades to "NO" if not found or empty
+        if account.get('copy_trades') is None or account.get('copy_trades') == '':
+            account['copy_trades'] = 'NO'
         
         # Only add account if it has at least API key and secret
         if account.get('api_key') and account.get('api_secret'):
