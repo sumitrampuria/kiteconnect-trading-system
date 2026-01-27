@@ -155,21 +155,19 @@ def close_position_in_account(position, target_account):
         print(f"    ✗ Cannot close position: Invalid LTP")
         return False
     
-    # Place order to close position
+    # Place order(s) to close position (recursive split if qty > max_quantity)
     try:
-        order_result = kite.place_order(
-            variety="regular",
-            exchange=exchange,
-            tradingsymbol=symbol,
-            transaction_type=transaction_type,
-            order_type="MARKET",
-            quantity=order_qty_rounded,
-            product="NRML",
-            validity="DAY"
+        ok, order_ids = _place_market_order_recursive(
+            kite, exchange, symbol, transaction_type, order_qty_rounded,
+            product="NRML", validity="DAY", tag_prefix="close",
         )
-        
-        print(f"    ✓ Order placed to close: {transaction_type} {order_qty_rounded} @ MARKET")
-        print(f"      Order ID: {order_result}")
+        if not ok or not order_ids:
+            print(f"    ✗ Failed to place order to close")
+            return False
+        n = len(order_ids)
+        suffix = f" ({n} orders)" if n > 1 else ""
+        print(f"    ✓ Order placed to close: {transaction_type} {order_qty_rounded} @ MARKET{suffix}")
+        print(f"      Order ID(s): {', '.join(str(oid) for oid in order_ids)}")
         return True
     except Exception as e:
         print(f"    ✗ Failed to close position: {e}")
@@ -195,16 +193,74 @@ def get_total_margin(account):
         return None
 
 
-# Load lot sizes
+# Load lot sizes and max quantity
 try:
     with open("lot_sizes_config.json", "r") as f:
         lot_sizes_config = json.load(f)
     lot_sizes = lot_sizes_config.get("lot_sizes", {})
+    max_quantity = lot_sizes_config.get("max_quantity", {})
 except:
     lot_sizes = {"NFO": 65, "BFO": 20}
+    max_quantity = {"NFO": 1755, "BFO": 2000}
 
 NFO_LOT_SIZE = lot_sizes.get("NFO", 65)
 BFO_LOT_SIZE = lot_sizes.get("BFO", 20)
+NFO_MAX_QUANTITY = max_quantity.get("NFO", 1755)
+BFO_MAX_QUANTITY = max_quantity.get("BFO", 2000)
+
+
+def _get_max_quantity(exchange):
+    return NFO_MAX_QUANTITY if exchange.upper() == "NFO" else BFO_MAX_QUANTITY
+
+
+def _place_market_order_recursive(kite, exchange, symbol, transaction_type, order_qty,
+                                  product="NRML", validity="DAY",
+                                  tag_prefix="", slice_index=1, order_ids=None):
+    """
+    Place MARKET order(s). If order_qty > max_quantity for exchange, split recursively.
+    order_qty must be a multiple of lot size.
+    Returns (success: bool, list of order_ids). Modifies order_ids in place when recursing.
+    """
+    if order_ids is None:
+        order_ids = []
+    max_qty = _get_max_quantity(exchange)
+    if order_qty <= 0:
+        return True, order_ids
+    if order_qty <= max_qty:
+        tag = f"{tag_prefix}{slice_index}".strip() or None
+        oid = kite.place_order(
+            variety="regular",
+            exchange=exchange,
+            tradingsymbol=symbol,
+            transaction_type=transaction_type,
+            order_type="MARKET",
+            quantity=order_qty,
+            product=product,
+            validity=validity,
+            tag=tag[:20] if tag else None,
+        )
+        order_ids.append(oid)
+        return True, order_ids
+    # Split: place max_qty first, then remainder
+    tag = f"{tag_prefix}{slice_index}".strip() or None
+    oid1 = kite.place_order(
+        variety="regular",
+        exchange=exchange,
+        tradingsymbol=symbol,
+        transaction_type=transaction_type,
+        order_type="MARKET",
+        quantity=max_qty,
+        product=product,
+        validity=validity,
+        tag=tag[:20] if tag else None,
+    )
+    order_ids.append(oid1)
+    ok, _ = _place_market_order_recursive(
+        kite, exchange, symbol, transaction_type, order_qty - max_qty,
+        product=product, validity=validity, tag_prefix=tag_prefix, slice_index=slice_index + 1,
+        order_ids=order_ids,
+    )
+    return ok, order_ids
 
 
 def round_to_lot_size(quantity, exchange):
@@ -312,21 +368,19 @@ def mimic_position_in_account(base_position, target_account, base_total_margin, 
         print(f"    ✗ Cannot place order: Invalid LTP")
         return False
     
-    # Place order
+    # Place order(s) (recursive split if qty > max_quantity)
     try:
-        order_result = kite.place_order(
-            variety="regular",
-            exchange=exchange,
-            tradingsymbol=symbol,
-            transaction_type=transaction_type,
-            order_type="MARKET",
-            quantity=order_qty,
-            product="NRML",
-            validity="DAY"
+        ok, order_ids = _place_market_order_recursive(
+            kite, exchange, symbol, transaction_type, order_qty,
+            product="NRML", validity="DAY", tag_prefix="mimic",
         )
-        
-        print(f"    ✓ Order placed: {transaction_type} {order_qty} @ MARKET (delta trade)")
-        print(f"      Order ID: {order_result}")
+        if not ok or not order_ids:
+            print(f"    ✗ Failed to place order")
+            return False
+        n = len(order_ids)
+        suffix = f" ({n} orders)" if n > 1 else ""
+        print(f"    ✓ Order placed: {transaction_type} {order_qty} @ MARKET{suffix} (delta trade)")
+        print(f"      Order ID(s): {', '.join(str(oid) for oid in order_ids)}")
         return True
     except Exception as e:
         print(f"    ✗ Failed to place order: {e}")
@@ -562,11 +616,7 @@ def run_sync_operations():
                     if close_position_in_account(pos_to_close, target_account):
                         closed_count += 1
                 print(f"\n  ✓ Closed {closed_count}/{len(positions_to_close)} positions")
-            else:
-                if base_positions:
-                    print(f"\n  ✓ No positions to close (all target positions exist in base account)")
-                else:
-                    print(f"\n  ✓ No positions to close (target account has no open positions)")
+            # else: no positions to close (silent)
             
             # Step 2: Sync positions that exist in base account (add/update)
             if base_positions and base_total_margin and base_total_margin > 0:
