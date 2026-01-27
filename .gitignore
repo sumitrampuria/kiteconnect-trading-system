@@ -45,6 +45,7 @@ Thumbs.db
 credentials.txt
 credentials_vk.txt
 service_account.json
+accounts_config.json
 *.json
 !requirements.txt
 !lot_sizes_config.json

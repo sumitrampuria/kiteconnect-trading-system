@@ -14,6 +14,60 @@ from kiteconnect import KiteConnect, KiteTicker
 from google_sheets_reader import get_all_accounts_from_google_sheet
 
 
+def get_trading_mechanism_from_sheet(spreadsheet_id, gid):
+    """Get Trading Mechanism value from row 4, cell B4."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    
+    scope = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+    client = None
+    
+    # Try service account file
+    default_paths = ['service_account.json', 'credentials.json', 'google_credentials.json']
+    for path in default_paths:
+        if os.path.exists(path):
+            creds = Credentials.from_service_account_file(path, scopes=scope)
+            client = gspread.authorize(creds)
+            break
+    
+    if client is None:
+        if os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
+            creds = Credentials.from_service_account_file(
+                os.getenv('GOOGLE_APPLICATION_CREDENTIALS'), scopes=scope
+            )
+            client = gspread.authorize(creds)
+    
+    if client is None:
+        return None
+    
+    try:
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        if gid:
+            worksheet = spreadsheet.get_worksheet_by_id(int(gid))
+        else:
+            worksheet = spreadsheet.sheet1
+        
+        # Read cell B4 (row 4, column 2)
+        cell_b4 = worksheet.cell(4, 2).value
+        if cell_b4:
+            value_upper = str(cell_b4).strip().upper()
+            if value_upper in ["BUTTON BASED", "AUTO"]:
+                return value_upper
+        
+        # Fallback: search row 4 for "Button Based" or "Auto"
+        row_values = worksheet.row_values(4)
+        for value in row_values:
+            if value:
+                value_upper = str(value).strip().upper()
+                if value_upper in ["BUTTON BASED", "AUTO"]:
+                    return value_upper
+        
+        return None
+    except Exception as e:
+        print(f"Warning: Could not read Trading Mechanism: {e}")
+        return None
+
+
 # Read all accounts from Google Sheets
 print("---Reading all accounts from Google Sheets---")
 try:
@@ -23,6 +77,17 @@ try:
         header_row=7,   # Headers are in row 7
         data_start_row=8  # Data starts from row 8
     )
+    
+    # Get Trading Mechanism from row 4
+    trading_mechanism = get_trading_mechanism_from_sheet(
+        spreadsheet_id="1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4",
+        gid=736151233
+    )
+    if not trading_mechanism:
+        trading_mechanism = "BUTTON BASED"  # Default
+        print("⚠️  Warning: Trading Mechanism not found. Defaulting to 'BUTTON BASED'")
+    else:
+        print(f"✓ Trading Mechanism: {trading_mechanism}")
 
     # Determine base account from "Copy Trades" column (value = "Base")
     # If no account has "Copy Trades" = "Base", default to first account
@@ -39,6 +104,29 @@ try:
     if not base_account_found and accounts:
         accounts[0]["is_base_account"] = True
         print("⚠️  Warning: No account found with 'Copy Trades' = 'Base'. Using first account as base.")
+
+    # Save account config to local file
+    config_data = {
+        "trading_mechanism": trading_mechanism,
+        "accounts": []
+    }
+    
+    for account in accounts:
+        account_config = {
+            "account_holder_name": account.get("account_holder_name"),
+            "account_kite_id": account.get("account_kite_id"),
+            "copy_trades": account.get("copy_trades", "NO"),
+            "api_key": account.get("api_key"),
+            "api_secret": account.get("api_secret"),
+            "request_url_by_zerodha": account.get("request_url_by_zerodha"),
+            "is_base_account": account.get("is_base_account", False)
+        }
+        config_data["accounts"].append(account_config)
+    
+    config_file = "accounts_config.json"
+    with open(config_file, "w") as f:
+        json.dump(config_data, f, indent=2)
+    print(f"✓ Saved account configuration to {config_file}")
 
     def display_account_name(account: dict) -> str:
         name = account.get("account_holder_name", "Unknown")

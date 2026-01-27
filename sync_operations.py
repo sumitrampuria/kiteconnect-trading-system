@@ -8,9 +8,11 @@ import datetime
 import os
 import sys
 import math
+import time
 import urllib.parse
 from kiteconnect import KiteConnect, KiteTicker
-from google_sheets_reader import get_all_accounts_from_google_sheet
+# Accounts are now loaded from local config file (accounts_config.json)
+# No need to import get_all_accounts_from_google_sheet
 
 # Import shared functions from main_copy
 # We'll need to import or redefine the necessary functions
@@ -157,7 +159,7 @@ def close_position_in_account(position, target_account):
     
     # Place order(s) to close position (recursive split if qty > max_quantity)
     try:
-        ok, order_ids = _place_market_order_recursive(
+        ok, order_ids, order_errors = _place_market_order_recursive(
             kite, exchange, symbol, transaction_type, order_qty_rounded,
             product="NRML", validity="DAY", tag_prefix="close",
         )
@@ -168,6 +170,29 @@ def close_position_in_account(position, target_account):
         suffix = f" ({n} orders)" if n > 1 else ""
         print(f"    ✓ Order placed to close: {transaction_type} {order_qty_rounded} @ MARKET{suffix}")
         print(f"      Order ID(s): {', '.join(str(oid) for oid in order_ids)}")
+        
+        # Check for order errors
+        if order_errors:
+            print(f"    ⚠️  Order Execution Errors:")
+            for oid, error_msg in order_errors:
+                print(f"      ✗ Order ID {oid}: {error_msg}")
+            return False
+        else:
+            # Double-check all orders after a longer delay to catch late rejections
+            time.sleep(5.0)
+            final_errors = []
+            print(f"    Re-checking order status after delay...")
+            for oid in order_ids:
+                is_success, error_msg, status_info = _check_order_status(kite, oid, symbol, exchange, print_status=True)
+                if not is_success:
+                    final_errors.append((oid, error_msg))
+            
+            if final_errors:
+                print(f"    ⚠️  Order Execution Errors (late detection):")
+                for oid, error_msg in final_errors:
+                    print(f"      ✗ Order ID {oid}: {error_msg}")
+                return False
+        
         return True
     except Exception as e:
         print(f"    ✗ Failed to close position: {e}")
@@ -213,54 +238,143 @@ def _get_max_quantity(exchange):
     return NFO_MAX_QUANTITY if exchange.upper() == "NFO" else BFO_MAX_QUANTITY
 
 
+def _check_order_status(kite, order_id, symbol, exchange, max_retries=5, delay=2.0, print_status=True):
+    """
+    Check order status and return error message if order failed.
+    Retries multiple times with longer delays as order status may take time to update.
+    Returns (is_success: bool, error_message: str or None, status_info: dict or None)
+    """
+    for attempt in range(max_retries):
+        try:
+            order_history = kite.order_history(order_id)
+            if order_history:
+                # Get the latest status (first in history is most recent)
+                order = order_history[0]
+                status = order.get('status', '').upper()
+                status_msg = order.get('status_message') or order.get('status_message_raw') or ''
+                filled_qty = order.get('filled_quantity', 0)
+                pending_qty = order.get('pending_quantity', 0)
+                cancelled_qty = order.get('cancelled_quantity', 0)
+                
+                status_info = {
+                    'status': status,
+                    'status_message': status_msg,
+                    'filled_quantity': filled_qty,
+                    'pending_quantity': pending_qty,
+                    'cancelled_quantity': cancelled_qty,
+                    'average_price': order.get('average_price', 0),
+                }
+                
+                if print_status:
+                    status_display = f"Status: {status}"
+                    if filled_qty > 0:
+                        status_display += f" | Filled: {filled_qty}"
+                    if pending_qty > 0:
+                        status_display += f" | Pending: {pending_qty}"
+                    if cancelled_qty > 0:
+                        status_display += f" | Cancelled: {cancelled_qty}"
+                    if status_msg:
+                        status_display += f" | {status_msg}"
+                    print(f"      Order ID {order_id}: {status_display}")
+                
+                # Check for final states
+                if status in ['REJECTED', 'CANCELLED']:
+                    error_msg = status_msg or 'Unknown error'
+                    return False, error_msg, status_info
+                elif status == 'COMPLETE':
+                    return True, None, status_info
+                
+                # For intermediate states (PUT ORDER REQ RECEIVED, VALIDATION PENDING, OPEN PENDING, etc.)
+                # Wait longer and retry to catch final status
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    continue
+                
+                # On last attempt, if still in intermediate state, warn but don't fail yet
+                # (will be checked again in final re-check)
+                if print_status and status not in ['COMPLETE', 'OPEN']:
+                    print(f"      Order ID {order_id}: ⚠️  Still in intermediate state: {status}")
+                return True, None, status_info
+        except Exception as e:
+            # If we can't check status, wait and retry
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                continue
+            # On last attempt, log the exception
+            if print_status:
+                print(f"      Order ID {order_id}: ⚠️  Could not check status - {e}")
+            return True, None, None
+    
+    return True, None, None
+
+
 def _place_market_order_recursive(kite, exchange, symbol, transaction_type, order_qty,
                                   product="NRML", validity="DAY",
-                                  tag_prefix="", slice_index=1, order_ids=None):
+                                  tag_prefix="", slice_index=1, order_ids=None, order_errors=None):
     """
     Place MARKET order(s). If order_qty > max_quantity for exchange, split recursively.
     order_qty must be a multiple of lot size.
-    Returns (success: bool, list of order_ids). Modifies order_ids in place when recursing.
+    Returns (success: bool, list of order_ids, list of errors). Modifies order_ids and order_errors in place when recursing.
     """
     if order_ids is None:
         order_ids = []
+    if order_errors is None:
+        order_errors = []
     max_qty = _get_max_quantity(exchange)
     if order_qty <= 0:
-        return True, order_ids
+        return True, order_ids, order_errors
     if order_qty <= max_qty:
         tag = f"{tag_prefix}{slice_index}".strip() or None
-        oid = kite.place_order(
+        try:
+            oid = kite.place_order(
+                variety="regular",
+                exchange=exchange,
+                tradingsymbol=symbol,
+                transaction_type=transaction_type,
+                order_type="MARKET",
+                quantity=order_qty,
+                product=product,
+                validity=validity,
+                tag=tag[:20] if tag else None,
+            )
+            order_ids.append(oid)
+            # Wait 8 seconds before checking order status (orders may take time to be processed/rejected)
+            time.sleep(8.0)
+            is_success, error_msg, status_info = _check_order_status(kite, oid, symbol, exchange, print_status=True)
+            if not is_success:
+                order_errors.append((oid, error_msg))
+            return True, order_ids, order_errors
+        except Exception as e:
+            # Re-raise with more context
+            raise Exception(f"Failed to place order for {symbol} ({exchange}): {str(e)}")
+    # Split: place max_qty first, then remainder
+    tag = f"{tag_prefix}{slice_index}".strip() or None
+    try:
+        oid1 = kite.place_order(
             variety="regular",
             exchange=exchange,
             tradingsymbol=symbol,
             transaction_type=transaction_type,
             order_type="MARKET",
-            quantity=order_qty,
+            quantity=max_qty,
             product=product,
             validity=validity,
             tag=tag[:20] if tag else None,
         )
-        order_ids.append(oid)
-        return True, order_ids
-    # Split: place max_qty first, then remainder
-    tag = f"{tag_prefix}{slice_index}".strip() or None
-    oid1 = kite.place_order(
-        variety="regular",
-        exchange=exchange,
-        tradingsymbol=symbol,
-        transaction_type=transaction_type,
-        order_type="MARKET",
-        quantity=max_qty,
-        product=product,
-        validity=validity,
-        tag=tag[:20] if tag else None,
-    )
-    order_ids.append(oid1)
-    ok, _ = _place_market_order_recursive(
+        order_ids.append(oid1)
+        # Wait 8 seconds before checking order status (orders may take time to be processed/rejected)
+        time.sleep(8.0)
+        is_success, error_msg, status_info = _check_order_status(kite, oid1, symbol, exchange, print_status=True)
+        if not is_success:
+            order_errors.append((oid1, error_msg))
+    except Exception as e:
+        raise Exception(f"Failed to place order for {symbol} ({exchange}), qty {max_qty}: {str(e)}")
+    ok, _, _ = _place_market_order_recursive(
         kite, exchange, symbol, transaction_type, order_qty - max_qty,
         product=product, validity=validity, tag_prefix=tag_prefix, slice_index=slice_index + 1,
-        order_ids=order_ids,
+        order_ids=order_ids, order_errors=order_errors,
     )
-    return ok, order_ids
+    return ok, order_ids, order_errors
 
 
 def round_to_lot_size(quantity, exchange):
@@ -370,7 +484,7 @@ def mimic_position_in_account(base_position, target_account, base_total_margin, 
     
     # Place order(s) (recursive split if qty > max_quantity)
     try:
-        ok, order_ids = _place_market_order_recursive(
+        ok, order_ids, order_errors = _place_market_order_recursive(
             kite, exchange, symbol, transaction_type, order_qty,
             product="NRML", validity="DAY", tag_prefix="mimic",
         )
@@ -381,6 +495,29 @@ def mimic_position_in_account(base_position, target_account, base_total_margin, 
         suffix = f" ({n} orders)" if n > 1 else ""
         print(f"    ✓ Order placed: {transaction_type} {order_qty} @ MARKET{suffix} (delta trade)")
         print(f"      Order ID(s): {', '.join(str(oid) for oid in order_ids)}")
+        
+        # Check for order errors
+        if order_errors:
+            print(f"    ⚠️  Order Execution Errors:")
+            for oid, error_msg in order_errors:
+                print(f"      ✗ Order ID {oid}: {error_msg}")
+            return False
+        else:
+            # Double-check all orders after a longer delay to catch late rejections
+            time.sleep(5.0)
+            final_errors = []
+            print(f"    Re-checking order status after delay...")
+            for oid in order_ids:
+                is_success, error_msg, status_info = _check_order_status(kite, oid, symbol, exchange, print_status=True)
+                if not is_success:
+                    final_errors.append((oid, error_msg))
+            
+            if final_errors:
+                print(f"    ⚠️  Order Execution Errors (late detection):")
+                for oid, error_msg in final_errors:
+                    print(f"      ✗ Order ID {oid}: {error_msg}")
+                return False
+        
         return True
     except Exception as e:
         print(f"    ✗ Failed to place order: {e}")
@@ -484,40 +621,43 @@ def print_positions_after_sync(account, positions):
     print(f"{'─'*80}")
 
 
+def load_accounts_config():
+    """Load account configuration from local file."""
+    config_file = "accounts_config.json"
+    if not os.path.exists(config_file):
+        raise Exception(f"Account configuration file '{config_file}' not found. Please run main.py first to generate it.")
+    
+    with open(config_file, "r") as f:
+        config = json.load(f)
+    
+    accounts = config.get("accounts", [])
+    
+    # Ensure is_base_account is set correctly
+    base_account_found = False
+    for account in accounts:
+        copy_trades = str(account.get('copy_trades', '')).strip().upper()
+        if copy_trades == 'BASE' or account.get('is_base_account'):
+            account["is_base_account"] = True
+            base_account_found = True
+        else:
+            account["is_base_account"] = False
+    
+    # If no account marked as "Base", default to first account
+    if not base_account_found and accounts:
+        accounts[0]["is_base_account"] = True
+    
+    return accounts
+
+
 def run_sync_operations():
     """Main function to run sync operations (called on each trigger)."""
     print("\n" + "="*80)
     print(f"SYNC TRIGGERED AT: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*80)
     
-    # Load accounts from Google Sheets (quiet mode)
+    # Load accounts from local config file
     try:
-        accounts = get_all_accounts_from_google_sheet(
-            spreadsheet_id="1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4",
-            gid=736151233,
-            header_row=7,
-            data_start_row=8
-        )
-        
-        # Determine base account from "Copy Trades" column (value = "Base")
-        # If no account has "Copy Trades" = "Base", default to first account
-        base_account_found = False
-        for account in accounts:
-            copy_trades = str(account.get('copy_trades', '')).strip().upper()
-            if copy_trades == 'BASE':
-                account["is_base_account"] = True
-                base_account_found = True
-            else:
-                account["is_base_account"] = False
-        
-        # If no account marked as "Base", default to first account
-        if not base_account_found and accounts:
-            accounts[0]["is_base_account"] = True
-        
-        # Default copy_trades if not found (but preserve "Base" if already set)
-        for account in accounts:
-            if account.get('copy_trades') is None or account.get('copy_trades') == '':
-                account['copy_trades'] = 'NO'
+        accounts = load_accounts_config()
     except Exception as e:
         print(f"✗ Failed to load accounts: {e}")
         return False
@@ -672,5 +812,82 @@ def run_sync_operations():
     return True
 
 
+def check_order_by_id(order_id):
+    """Utility function to check a specific order ID across all accounts."""
+    print(f"\n{'='*80}")
+    print(f"CHECKING ORDER STATUS: {order_id}")
+    print(f"{'='*80}")
+    
+    # Load accounts from local config file
+    try:
+        accounts = load_accounts_config()
+    except Exception as e:
+        print(f"Error loading accounts: {e}")
+        return
+    
+    # Check order in each account
+    for account in accounts:
+        kite = initialize_kite_quiet(account)
+        if not kite:
+            continue
+        
+        try:
+            order_history = kite.order_history(order_id)
+            if order_history:
+                account_name = account.get('account_holder_name', 'Unknown')
+                account_kite_id = account.get('account_kite_id', 'Unknown')
+                
+                print(f"\n✓ Found in account: {account_name} ({account_kite_id})")
+                print("-"*80)
+                
+                for order in order_history:
+                    print(f"Order ID: {order.get('order_id')}")
+                    print(f"Exchange Order ID: {order.get('exchange_order_id')}")
+                    print(f"Status: {order.get('status')}")
+                    print(f"Status Message: {order.get('status_message')}")
+                    print(f"Status Message Raw: {order.get('status_message_raw')}")
+                    print(f"Trading Symbol: {order.get('tradingsymbol')}")
+                    print(f"Exchange: {order.get('exchange')}")
+                    print(f"Transaction Type: {order.get('transaction_type')}")
+                    print(f"Order Type: {order.get('order_type')}")
+                    print(f"Quantity: {order.get('quantity')}")
+                    print(f"Filled Quantity: {order.get('filled_quantity')}")
+                    print(f"Pending Quantity: {order.get('pending_quantity')}")
+                    print(f"Cancelled Quantity: {order.get('cancelled_quantity')}")
+                    print(f"Price: {order.get('price')}")
+                    print(f"Average Price: {order.get('average_price')}")
+                    print(f"Order Timestamp: {order.get('order_timestamp')}")
+                    print(f"Exchange Timestamp: {order.get('exchange_timestamp')}")
+                    
+                    status = order.get('status', '').upper()
+                    if status in ['REJECTED', 'CANCELLED']:
+                        print(f"\n⚠️  ORDER FAILED:")
+                        print(f"   Status: {status}")
+                        print(f"   Error: {order.get('status_message')}")
+                        print(f"   Raw Error: {order.get('status_message_raw')}")
+                    elif status == 'COMPLETE':
+                        print(f"\n✓ ORDER COMPLETED")
+                    else:
+                        print(f"\n⏳ ORDER STATUS: {status} (in progress)")
+                    
+                    print("-"*80)
+                return
+        except Exception as e:
+            # Order not found in this account
+            continue
+    
+    print(f"\n✗ Order {order_id} not found in any account.")
+    print("Order IDs are account-specific. Make sure you're checking the correct account.")
+
+
 if __name__ == "__main__":
-    run_sync_operations()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--check-order":
+        # Check specific order
+        order_id = sys.argv[2] if len(sys.argv) > 2 else None
+        if order_id:
+            check_order_by_id(order_id)
+        else:
+            print("Usage: python sync_operations.py --check-order <order_id>")
+    else:
+        run_sync_operations()

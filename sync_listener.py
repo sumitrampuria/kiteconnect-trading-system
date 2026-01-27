@@ -173,46 +173,81 @@ def run_sync():
         return False
 
 
+def load_accounts_config():
+    """Load account configuration from local file."""
+    config_file = "accounts_config.json"
+    if not os.path.exists(config_file):
+        raise Exception(f"Account configuration file '{config_file}' not found. Please run main.py first to generate it.")
+    
+    with open(config_file, "r") as f:
+        config = json.load(f)
+    
+    trading_mechanism = config.get("trading_mechanism", "BUTTON BASED")
+    accounts = config.get("accounts", [])
+    
+    return trading_mechanism, accounts
+
+
 def main_listener_loop():
     """Main loop that listens for triggers."""
     print("="*80)
     print("GOOGLE SHEETS SYNC LISTENER")
     print("="*80)
+    print("\nLoading account configuration from local file...")
+    
+    # Load config from local file
+    try:
+        trading_mechanism, accounts_config = load_accounts_config()
+        print(f"✓ Loaded configuration for {len(accounts_config)} account(s)")
+    except Exception as e:
+        print(f"✗ Failed to load account configuration: {e}")
+        print("Please run main.py first to generate accounts_config.json")
+        return
+    
     print("\nListening for sync triggers...")
     print("(Press Ctrl+C to stop)\n")
     
-    client = get_google_sheets_client()
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+    # Only connect to Google Sheets if trading mechanism is Button Based
+    client = None
+    spreadsheet = None
+    worksheet = None
     
-    if GID:
+    if trading_mechanism == "BUTTON BASED":
         try:
-            worksheet = spreadsheet.get_worksheet_by_id(int(GID))
-        except:
-            worksheet = spreadsheet.sheet1
+            client = get_google_sheets_client()
+            spreadsheet = client.open_by_key(SPREADSHEET_ID)
+            
+            if GID:
+                try:
+                    worksheet = spreadsheet.get_worksheet_by_id(int(GID))
+                except:
+                    worksheet = spreadsheet.sheet1
+            else:
+                worksheet = spreadsheet.sheet1
+            print("✓ Connected to Google Sheets for trigger detection")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not connect to Google Sheets: {e}")
+            print("   Button-based triggers will not work. Please check your connection.")
     else:
-        worksheet = spreadsheet.sheet1
-    
-    # Get trading mechanism once at startup - this will be the mode for the entire lifecycle
-    trading_mechanism = get_trading_mechanism(worksheet)
+        print("✓ Auto mode: No Google Sheets connection needed")
     
     # Determine and print the mode
     if trading_mechanism == "AUTO":
         print(f"✓ Trading Mechanism: AUTO")
         print("  - First sync will run immediately")
-        print("  - Subsequent syncs will run at seconds = 0 and seconds = 30 of each minute\n")
+        print("  - Subsequent syncs will run at seconds = 0 of each minute\n")
     elif trading_mechanism == "BUTTON BASED":
         print(f"✓ Trading Mechanism: BUTTON BASED")
         print("  - Sync will only run when button is clicked\n")
     else:
         # Unknown or missing - default to button-based
         trading_mechanism = "BUTTON BASED"
-        print(f"⚠️  Trading Mechanism not found in row 4 (cell B4)")
-        print(f"  - Defaulting to: BUTTON BASED")
+        print(f"⚠️  Trading Mechanism unknown, defaulting to: BUTTON BASED")
         print("  - Sync will only run when button is clicked\n")
     
-    # Only check for Sync Trigger column if we're in Button Based mode
+    # Only check for Sync Trigger column if we're in Button Based mode and have worksheet
     trigger_col = None
-    if trading_mechanism == "BUTTON BASED":
+    if trading_mechanism == "BUTTON BASED" and worksheet:
         trigger_col = find_trigger_column(worksheet, TRIGGER_ROW)
         
         if not trigger_col:
@@ -224,7 +259,6 @@ def main_listener_loop():
     last_trigger_time = None
     last_trigger_row = None
     last_auto_trigger_minute = None  # Track last minute when auto trigger fired
-    last_auto_trigger_second = None  # Track last second (0 or 30) when auto trigger fired
     first_auto_trigger_done = False  # Track if first trigger has been executed
     
     try:
@@ -255,13 +289,11 @@ def main_listener_loop():
                     print("Resuming auto listener... (Press Ctrl+C to stop)")
                     print("="*80 + "\n")
                 
-                # Subsequent triggers: at seconds = 0 and seconds = 30 of each minute
-                # Check if we're at 0 or 30 seconds and haven't triggered for this second yet
-                elif (current_second == 0 or current_second == 30) and \
-                     (current_minute != last_auto_trigger_minute or current_second != last_auto_trigger_second):
+                # Subsequent triggers: at seconds = 0 of each minute
+                # Check if we're at 0 seconds and haven't triggered for this minute yet
+                elif current_second == 0 and current_minute != last_auto_trigger_minute:
                     print(f"\n🔄 Auto trigger at {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                     last_auto_trigger_minute = current_minute
-                    last_auto_trigger_second = current_second
                     
                     # Run sync
                     success = run_sync()
@@ -284,8 +316,8 @@ def main_listener_loop():
                 # Reset first_auto_trigger_done flag in case mode switches back to AUTO later
                 first_auto_trigger_done = False
                 
-                # Check for button trigger
-                if trigger_col:
+                # Check for button trigger (only if we have worksheet connection)
+                if worksheet and trigger_col:
                     row_num, trigger_value = check_trigger(worksheet, trigger_col, data_start_row=8)
                     
                     if row_num and (row_num != last_trigger_row or time.time() - (last_trigger_time or 0) > 10):
@@ -306,6 +338,10 @@ def main_listener_loop():
                         print("\n" + "="*80)
                         print("Resuming listener... (Press Ctrl+C to stop)")
                         print("="*80 + "\n")
+                elif not worksheet:
+                    # No Google Sheets connection - wait a bit longer before checking again
+                    time.sleep(5)
+                    continue
                 
                 # Use shorter polling interval for Button Based mode to reduce lag
                 time.sleep(1)  # Check every 1 second for faster trigger detection
@@ -316,8 +352,8 @@ def main_listener_loop():
                 # Reset first_auto_trigger_done flag
                 first_auto_trigger_done = False
                 
-                # Check for button trigger
-                if trigger_col:
+                # Check for button trigger (only if we have worksheet connection)
+                if worksheet and trigger_col:
                     row_num, trigger_value = check_trigger(worksheet, trigger_col, data_start_row=8)
                     
                     if row_num and (row_num != last_trigger_row or time.time() - (last_trigger_time or 0) > 10):
