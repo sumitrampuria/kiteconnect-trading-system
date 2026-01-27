@@ -44,8 +44,9 @@ Thumbs.db
 # Sensitive credentials and tokens
 credentials.txt
 credentials_vk.txt
-AccessToken/
 service_account.json
 *.json
 !requirements.txt
+!lot_sizes_config.json
+!AccessToken/*.json
 

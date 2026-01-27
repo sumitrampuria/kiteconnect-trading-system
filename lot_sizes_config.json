@@ -1,0 +1,11 @@
+{
+    "lot_sizes": {
+        "NFO": 65,
+        "BFO": 20
+    },
+    "max_quantity": {
+        "NFO": 1755,
+        "BFO": 1000
+    },
+    "description": "Lot sizes and max order quantity per exchange. NFO = Nifty (NSE F&O), BFO = Sensex (BSE F&O). Orders above max_quantity are split recursively."
+}
