@@ -498,8 +498,11 @@ def print_positions_for_account(account, positions):
         quantity = pos.get('quantity', 0)
         avg_price = pos.get('average_price', 0)
 
-        # Fetch fresh LTP and compute P&L locally
-        ltp, pnl = _compute_ltp_and_pnl(account.get('kite'), pos)
+        # Fetch fresh LTP and compute fallback P&L locally
+        ltp, computed_pnl = _compute_ltp_and_pnl(account.get('kite'), pos)
+        # Prefer API-provided P&L if present (already accounts for multipliers); otherwise use computed fallback
+        api_pnl = pos.get('pnl', None)
+        pnl = api_pnl if api_pnl is not None else computed_pnl
         total_pnl += pnl
 
         # Format values

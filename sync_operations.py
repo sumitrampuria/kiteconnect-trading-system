@@ -491,11 +491,14 @@ def print_positions_after_sync(account, positions):
         except Exception:
             pass
 
-        # Recompute P&L locally: (LTP - Avg Price) * Quantity (positive when market price > avg for long)
+        # Recompute fallback P&L locally: (LTP - Avg Price) * Quantity
         try:
-            pnl = (ltp - (avg_price or 0)) * (quantity or 0)
+            computed_pnl = (ltp - (avg_price or 0)) * (quantity or 0)
         except Exception:
-            pnl = 0
+            computed_pnl = 0
+        # Prefer API-provided P&L if present
+        api_pnl = pos.get('pnl', None)
+        pnl = api_pnl if api_pnl is not None else computed_pnl
         total_pnl += pnl
 
         qty_str = f"{quantity:+.0f}" if quantity != 0 else "0"
