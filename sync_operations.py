@@ -515,9 +515,9 @@ def print_positions_after_sync(account, positions):
         status = "OPEN" if quantity != 0 else "CLOSED"
         print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display_api:<18} {pnl_display_cmp:<18}")
     
-    # Print totals for API and Computed P&L
-    total_api_str = f"API Total: ₹{total_api_pnl:+,.2f}"
-    total_cmp_str = f"CMP Total: ₹{total_cmp_pnl:+,.2f}"
+    # Print totals for API and Computed P&L (values only)
+    total_api_str = f"₹{total_api_pnl:+,.2f}"
+    total_cmp_str = f"₹{total_cmp_pnl:+,.2f}"
     print()
     print(f"  {'':<8} {'':<20} {'':<10} {'':<10} {'':<12} {'':<12} {'':<12} {total_api_str:<18} {total_cmp_str:<18}")
     print(f"{'─'*80}")
