@@ -505,6 +505,9 @@ def print_positions_for_account(account, positions):
         api_pnl = pos.get('pnl', None)
         api_pnl_val = api_pnl if api_pnl is not None else 0
         cmp_pnl_val = computed_pnl if computed_pnl is not None else 0
+        # If position is closed, make computed P&L equal to API P&L for consistency
+        if quantity == 0:
+            cmp_pnl_val = api_pnl_val
         total_api_pnl += api_pnl_val
         total_cmp_pnl += cmp_pnl_val
 
