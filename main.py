@@ -486,9 +486,9 @@ def print_positions_for_account(account, positions):
     print(f"\n  Total Positions: {len(all_positions)} (Open: {len(open_positions)}, Closed: {len(closed_positions)})")
     print(
         f"\n  {'Status':<8} {'Symbol':<20} {'Exchange':<10} {'Product':<10} "
-        f"{'Quantity':<12} {'Avg Price':<12} {'LTP':<12} {'P&L':<15}"
+        f"{'Quantity':<12} {'Avg Price':<12} {'LTP':<12} {'P&L API':<18} {'P&L CMP':<18}"
     )
-    print(f"  {'-'*8} {'-'*20} {'-'*10} {'-'*10} {'-'*12} {'-'*12} {'-'*12} {'-'*15}")
+    print(f"  {'-'*8} {'-'*20} {'-'*10} {'-'*10} {'-'*12} {'-'*12} {'-'*12} {'-'*18} {'-'*18}")
     
     total_api_pnl = 0
     total_cmp_pnl = 0
@@ -977,9 +977,9 @@ def print_positions_after_sync(account, positions):
     print(f"\n  Total Positions: {len(all_positions)} (Open: {len(open_positions)}, Closed: {len(closed_positions)})")
     print(
         f"\n  {'Status':<8} {'Symbol':<20} {'Exchange':<10} {'Product':<10} "
-        f"{'Quantity':<12} {'Avg Price':<12} {'LTP':<12} {'P&L':<15}"
+        f"{'Quantity':<12} {'Avg Price':<12} {'LTP':<12} {'P&L API':<18} {'P&L CMP':<18}"
     )
-    print(f"  {'-'*8} {'-'*20} {'-'*10} {'-'*10} {'-'*12} {'-'*12} {'-'*12} {'-'*15}")
+    print(f"  {'-'*8} {'-'*20} {'-'*10} {'-'*10} {'-'*12} {'-'*12} {'-'*12} {'-'*18} {'-'*18}")
     
     total_pnl = 0
     for pos in all_positions:
