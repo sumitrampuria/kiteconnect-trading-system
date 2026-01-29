@@ -171,28 +171,12 @@ def close_position_in_account(position, target_account):
         print(f"    ✓ Order placed to close: {transaction_type} {order_qty_rounded} @ MARKET{suffix}")
         print(f"      Order ID(s): {', '.join(str(oid) for oid in order_ids)}")
         
-        # Check for order errors
+        # Check for order errors (from immediate place_order response)
         if order_errors:
             print(f"    ⚠️  Order Execution Errors:")
             for oid, error_msg in order_errors:
                 print(f"      ✗ Order ID {oid}: {error_msg}")
             return False
-        else:
-            # Double-check all orders after a longer delay to catch late rejections
-            time.sleep(5.0)
-            final_errors = []
-            print(f"    Re-checking order status after delay...")
-            for oid in order_ids:
-                is_success, error_msg, status_info = _check_order_status(kite, oid, symbol, exchange, print_status=True)
-                if not is_success:
-                    final_errors.append((oid, error_msg))
-            
-            if final_errors:
-                print(f"    ⚠️  Order Execution Errors (late detection):")
-                for oid, error_msg in final_errors:
-                    print(f"      ✗ Order ID {oid}: {error_msg}")
-                return False
-        
         return True
     except Exception as e:
         print(f"    ✗ Failed to close position: {e}")
@@ -238,76 +222,6 @@ def _get_max_quantity(exchange):
     return NFO_MAX_QUANTITY if exchange.upper() == "NFO" else BFO_MAX_QUANTITY
 
 
-def _check_order_status(kite, order_id, symbol, exchange, max_retries=5, delay=2.0, print_status=True):
-    """
-    Check order status and return error message if order failed.
-    Retries multiple times with longer delays as order status may take time to update.
-    Returns (is_success: bool, error_message: str or None, status_info: dict or None)
-    """
-    for attempt in range(max_retries):
-        try:
-            order_history = kite.order_history(order_id)
-            if order_history:
-                # Get the latest status (first in history is most recent)
-                order = order_history[0]
-                status = order.get('status', '').upper()
-                status_msg = order.get('status_message') or order.get('status_message_raw') or ''
-                filled_qty = order.get('filled_quantity', 0)
-                pending_qty = order.get('pending_quantity', 0)
-                cancelled_qty = order.get('cancelled_quantity', 0)
-                
-                status_info = {
-                    'status': status,
-                    'status_message': status_msg,
-                    'filled_quantity': filled_qty,
-                    'pending_quantity': pending_qty,
-                    'cancelled_quantity': cancelled_qty,
-                    'average_price': order.get('average_price', 0),
-                }
-                
-                if print_status:
-                    status_display = f"Status: {status}"
-                    if filled_qty > 0:
-                        status_display += f" | Filled: {filled_qty}"
-                    if pending_qty > 0:
-                        status_display += f" | Pending: {pending_qty}"
-                    if cancelled_qty > 0:
-                        status_display += f" | Cancelled: {cancelled_qty}"
-                    if status_msg:
-                        status_display += f" | {status_msg}"
-                    print(f"      Order ID {order_id}: {status_display}")
-                
-                # Check for final states
-                if status in ['REJECTED', 'CANCELLED']:
-                    error_msg = status_msg or 'Unknown error'
-                    return False, error_msg, status_info
-                elif status == 'COMPLETE':
-                    return True, None, status_info
-                
-                # For intermediate states (PUT ORDER REQ RECEIVED, VALIDATION PENDING, OPEN PENDING, etc.)
-                # Wait longer and retry to catch final status
-                if attempt < max_retries - 1:
-                    time.sleep(delay)
-                    continue
-                
-                # On last attempt, if still in intermediate state, warn but don't fail yet
-                # (will be checked again in final re-check)
-                if print_status and status not in ['COMPLETE', 'OPEN']:
-                    print(f"      Order ID {order_id}: ⚠️  Still in intermediate state: {status}")
-                return True, None, status_info
-        except Exception as e:
-            # If we can't check status, wait and retry
-            if attempt < max_retries - 1:
-                time.sleep(delay)
-                continue
-            # On last attempt, log the exception
-            if print_status:
-                print(f"      Order ID {order_id}: ⚠️  Could not check status - {e}")
-            return True, None, None
-    
-    return True, None, None
-
-
 def _place_market_order_recursive(kite, exchange, symbol, transaction_type, order_qty,
                                   product="NRML", validity="DAY",
                                   tag_prefix="", slice_index=1, order_ids=None, order_errors=None):
@@ -338,11 +252,6 @@ def _place_market_order_recursive(kite, exchange, symbol, transaction_type, orde
                 tag=tag[:20] if tag else None,
             )
             order_ids.append(oid)
-            # Wait 8 seconds before checking order status (orders may take time to be processed/rejected)
-            time.sleep(8.0)
-            is_success, error_msg, status_info = _check_order_status(kite, oid, symbol, exchange, print_status=True)
-            if not is_success:
-                order_errors.append((oid, error_msg))
             return True, order_ids, order_errors
         except Exception as e:
             # Re-raise with more context
@@ -362,11 +271,6 @@ def _place_market_order_recursive(kite, exchange, symbol, transaction_type, orde
             tag=tag[:20] if tag else None,
         )
         order_ids.append(oid1)
-        # Wait 8 seconds before checking order status (orders may take time to be processed/rejected)
-        time.sleep(8.0)
-        is_success, error_msg, status_info = _check_order_status(kite, oid1, symbol, exchange, print_status=True)
-        if not is_success:
-            order_errors.append((oid1, error_msg))
     except Exception as e:
         raise Exception(f"Failed to place order for {symbol} ({exchange}), qty {max_qty}: {str(e)}")
     ok, _, _ = _place_market_order_recursive(
@@ -496,28 +400,12 @@ def mimic_position_in_account(base_position, target_account, base_total_margin, 
         print(f"    ✓ Order placed: {transaction_type} {order_qty} @ MARKET{suffix} (delta trade)")
         print(f"      Order ID(s): {', '.join(str(oid) for oid in order_ids)}")
         
-        # Check for order errors
+        # Check for order errors (from immediate place_order response)
         if order_errors:
             print(f"    ⚠️  Order Execution Errors:")
             for oid, error_msg in order_errors:
                 print(f"      ✗ Order ID {oid}: {error_msg}")
             return False
-        else:
-            # Double-check all orders after a longer delay to catch late rejections
-            time.sleep(5.0)
-            final_errors = []
-            print(f"    Re-checking order status after delay...")
-            for oid in order_ids:
-                is_success, error_msg, status_info = _check_order_status(kite, oid, symbol, exchange, print_status=True)
-                if not is_success:
-                    final_errors.append((oid, error_msg))
-            
-            if final_errors:
-                print(f"    ⚠️  Order Execution Errors (late detection):")
-                for oid, error_msg in final_errors:
-                    print(f"      ✗ Order ID {oid}: {error_msg}")
-                return False
-        
         return True
     except Exception as e:
         print(f"    ✗ Failed to place order: {e}")
