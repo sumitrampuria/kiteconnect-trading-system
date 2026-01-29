@@ -513,12 +513,9 @@ def print_positions_for_account(account, positions):
         avg_price_str = f"{avg_price:.2f}" if avg_price else "0.00"
         ltp_str = f"{ltp:.2f}" if ltp else "0.00"
 
-        # Prepare API and computed P&L strings
-        api_str = f"API ₹{api_pnl_val:+,.2f}"
-        cmp_str = f"CMP ₹{cmp_pnl_val:+,.2f}"
-
-        pnl_display_api = api_str
-        pnl_display_cmp = cmp_str
+        # Prepare API and computed P&L strings (values only; column headers indicate API/CMP)
+        pnl_display_api = f"₹{api_pnl_val:+,.2f}" if api_pnl_val is not None else "N/A"
+        pnl_display_cmp = f"₹{cmp_pnl_val:+,.2f}"
 
         status = "OPEN" if quantity != 0 else "CLOSED"
         print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display_api:<18} {pnl_display_cmp:<18}")
