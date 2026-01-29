@@ -912,7 +912,7 @@ def mimic_position_in_account(base_position, target_account, base_total_margin, 
             validity="DAY"
         )
         
-        print(f"    ✓ Order placed: {transaction_type} {order_qty} @ MARKET (delta trade)")
+        print(f"    🚀 ✓ Order placed: {transaction_type} {order_qty} @ MARKET (delta trade)")
         print(f"      Order ID: {order_result}")
         return True
     except Exception as e:

@@ -168,7 +168,7 @@ def close_position_in_account(position, target_account):
             return False
         n = len(order_ids)
         suffix = f" ({n} orders)" if n > 1 else ""
-        print(f"    ✓ Order placed to close: {transaction_type} {order_qty_rounded} @ MARKET{suffix}")
+        print(f"    🚀 ✓ Order placed to close: {transaction_type} {order_qty_rounded} @ MARKET{suffix}")
         print(f"      Order ID(s): {', '.join(str(oid) for oid in order_ids)}")
         
         # Check for order errors (from immediate place_order response)
@@ -397,7 +397,7 @@ def mimic_position_in_account(base_position, target_account, base_total_margin, 
             return False
         n = len(order_ids)
         suffix = f" ({n} orders)" if n > 1 else ""
-        print(f"    ✓ Order placed: {transaction_type} {order_qty} @ MARKET{suffix} (delta trade)")
+        print(f"    🚀 ✓ Order placed: {transaction_type} {order_qty} @ MARKET{suffix} (delta trade)")
         print(f"      Order ID(s): {', '.join(str(oid) for oid in order_ids)}")
         
         # Check for order errors (from immediate place_order response)
