@@ -47,9 +47,9 @@ def _compute_ltp_and_pnl(kite, pos):
         # ignore quote errors and keep fallback LTP
         pass
 
-    # Compute P&L: (Avg Price - LTP) * Quantity (no lot-size multiplier)
+    # Compute P&L: (LTP - Avg Price) * Quantity (positive when market price > avg for long)
     try:
-        pnl = (avg_price - ltp) * quantity
+        pnl = (ltp - avg_price) * quantity
     except Exception:
         pnl = 0
 

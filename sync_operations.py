@@ -491,9 +491,9 @@ def print_positions_after_sync(account, positions):
         except Exception:
             pass
 
-        # Recompute P&L locally: (Avg Price - LTP) * Quantity (no lot-size multiplier)
+        # Recompute P&L locally: (LTP - Avg Price) * Quantity (positive when market price > avg for long)
         try:
-            pnl = ((avg_price or 0) - ltp) * (quantity or 0)
+            pnl = (ltp - (avg_price or 0)) * (quantity or 0)
         except Exception:
             pnl = 0
         total_pnl += pnl
