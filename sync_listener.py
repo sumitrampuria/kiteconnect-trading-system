@@ -11,7 +11,7 @@ import sys
 import subprocess
 
 # Configuration
-SPREADSHEET_ID = "1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4"
+SPREADSHEET_ID = "1h9r9DyHgXX39EysPEzZDn70mBM7jQa-I1l8u6bl92M4"
 GID = 736151233
 TRIGGER_COLUMN_NAME = "Sync Trigger"  # Column name in Google Sheet
 TRADING_MECHANISM_ROW = 4  # Row 4 contains "Trading Mechanism" setting

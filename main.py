@@ -39,7 +39,7 @@ def _compute_ltp_and_pnl(kite, pos):
     ltp = pos.get('last_price', 0) or 0
     try:
         if symbol and exchange:
-            quote_key = f\"{exchange}:{symbol}\"
+            quote_key = f"{exchange}:{symbol}"
             quote_data = kite.quote([quote_key])
             if quote_data and quote_key in quote_data:
                 ltp = quote_data[quote_key].get('last_price', ltp)
@@ -112,7 +112,7 @@ def get_trading_mechanism_from_sheet(spreadsheet_id, gid):
 print("---Reading all accounts from Google Sheets---")
 try:
     accounts = get_all_accounts_from_google_sheet(
-        spreadsheet_id="1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4",
+        spreadsheet_id="1h9r9DyHgXX39EysPEzZDn70mBM7jQa-I1l8u6bl92M4",
         gid=736151233,  # GID from the URL
         header_row=7,   # Headers are in row 7
         data_start_row=8  # Data starts from row 8
@@ -120,7 +120,7 @@ try:
     
     # Get Trading Mechanism from row 4
     trading_mechanism = get_trading_mechanism_from_sheet(
-        spreadsheet_id="1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4",
+        spreadsheet_id="1h9r9DyHgXX39EysPEzZDn70mBM7jQa-I1l8u6bl92M4",
         gid=736151233
     )
     if not trading_mechanism:

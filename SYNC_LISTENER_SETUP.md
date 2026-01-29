@@ -13,7 +13,7 @@ The system consists of:
 
 ### Step 1: Add "Sync Trigger" Column to Google Sheet
 
-1. Open your Google Sheet: https://docs.google.com/spreadsheets/d/1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4
+1. Open your Google Sheet: https://docs.google.com/spreadsheets/d/1h9r9DyHgXX39EysPEzZDn70mBM7jQa-I1l8u6bl92M4
 2. In **row 7** (header row), add a new column named **"Sync Trigger"**
 3. This column will be used to trigger syncs
 

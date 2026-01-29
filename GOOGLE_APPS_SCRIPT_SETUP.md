@@ -15,7 +15,7 @@ The Google Apps Script button provides a user-friendly way to trigger syncs:
 ### Step 1: Open Google Apps Script Editor
 
 1. Open your Google Sheet:
-   https://docs.google.com/spreadsheets/d/1bz-TvpcGnUpzD59sPnbLOtjrRpb4U4v_B-Pohgd3ZU4
+   https://docs.google.com/spreadsheets/d/1h9r9DyHgXX39EysPEzZDn70mBM7jQa-I1l8u6bl92M4
 
 2. Click on **Extensions** in the menu bar (top)
 
