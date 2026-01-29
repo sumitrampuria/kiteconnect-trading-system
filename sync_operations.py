@@ -480,9 +480,6 @@ def print_positions_after_sync(account, positions):
         quantity = pos.get('quantity', 0)
         avg_price = pos.get('average_price', 0)
 
-        # Determine lot size multiplier
-        lot_size = NFO_LOT_SIZE if exchange.upper() == "NFO" else BFO_LOT_SIZE
-
         # Fetch fresh LTP (fallback to position value)
         ltp = pos.get('last_price', 0) or 0
         try:
@@ -494,9 +491,9 @@ def print_positions_after_sync(account, positions):
         except Exception:
             pass
 
-        # Recompute P&L locally using lot size multiplier
+        # Recompute P&L locally: (Avg Price - LTP) * Quantity (no lot-size multiplier)
         try:
-            pnl = (ltp - (avg_price or 0)) * (quantity or 0) * lot_size
+            pnl = ((avg_price or 0) - ltp) * (quantity or 0)
         except Exception:
             pnl = 0
         total_pnl += pnl

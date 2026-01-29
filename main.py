@@ -33,8 +33,7 @@ def _compute_ltp_and_pnl(kite, pos):
     avg_price = pos.get('average_price', 0) or 0
     quantity = pos.get('quantity', 0) or 0
 
-    # default lot size multiplier (1 for non-F&O instruments)
-    lot_size = lot_sizes.get(exchange, 1)
+    # (no per-instrument lot multiplier used here)
 
     # Start with the LTP provided in the position object as fallback
     ltp = pos.get('last_price', 0) or 0
@@ -48,9 +47,9 @@ def _compute_ltp_and_pnl(kite, pos):
         # ignore quote errors and keep fallback LTP
         pass
 
-    # Compute P&L: (LTP - avg_price) * quantity * lot_size
+    # Compute P&L: (Avg Price - LTP) * Quantity (no lot-size multiplier)
     try:
-        pnl = (ltp - avg_price) * quantity * lot_size
+        pnl = (avg_price - ltp) * quantity
     except Exception:
         pnl = 0
 
