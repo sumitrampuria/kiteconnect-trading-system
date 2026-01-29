@@ -440,6 +440,7 @@ def print_positions_after_sync(account, positions):
     account_name = display_account_name(account)
     account_kite_id = account.get('account_kite_id', 'Unknown')
     sync_status = get_account_sync_status(account)
+    kite = account.get('kite')
     
     print(f"\n{'─'*80}")
     print(f"POSITIONS FOR: {account_name} ({account_kite_id}) - [{sync_status}]")
@@ -478,22 +479,40 @@ def print_positions_after_sync(account, positions):
         product = pos.get('product', 'N/A')
         quantity = pos.get('quantity', 0)
         avg_price = pos.get('average_price', 0)
-        ltp = pos.get('last_price', 0)
-        pnl = pos.get('pnl', 0)
+
+        # Determine lot size multiplier
+        lot_size = NFO_LOT_SIZE if exchange.upper() == "NFO" else BFO_LOT_SIZE
+
+        # Fetch fresh LTP (fallback to position value)
+        ltp = pos.get('last_price', 0) or 0
+        try:
+            if kite and symbol and exchange:
+                quote_key = f"{exchange}:{symbol}"
+                quote_data = kite.quote([quote_key])
+                if quote_data and quote_key in quote_data:
+                    ltp = quote_data[quote_key].get('last_price', ltp)
+        except Exception:
+            pass
+
+        # Recompute P&L locally using lot size multiplier
+        try:
+            pnl = (ltp - (avg_price or 0)) * (quantity or 0) * lot_size
+        except Exception:
+            pnl = 0
         total_pnl += pnl
-        
+
         qty_str = f"{quantity:+.0f}" if quantity != 0 else "0"
         avg_price_str = f"{avg_price:.2f}" if avg_price else "0.00"
         ltp_str = f"{ltp:.2f}" if ltp else "0.00"
         pnl_str = f"₹{pnl:+.2f}" if pnl else "₹0.00"
-        
+
         if pnl > 0:
             pnl_display = f"✓ {pnl_str}"
         elif pnl < 0:
             pnl_display = f"✗ {pnl_str}"
         else:
             pnl_display = pnl_str
-        
+
         status = "OPEN" if quantity != 0 else "CLOSED"
         print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display:<15}")
     

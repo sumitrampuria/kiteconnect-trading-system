@@ -12,8 +12,49 @@ import urllib.parse
 import math
 from kiteconnect import KiteConnect, KiteTicker
 from google_sheets_reader import get_all_accounts_from_google_sheet
+# Load lot sizes and max quantity (used to compute P&L for derivatives)
+try:
+    with open("lot_sizes_config.json", "r") as f:
+        lot_sizes_config = json.load(f)
+    lot_sizes = lot_sizes_config.get("lot_sizes", {})
+    max_quantity = lot_sizes_config.get("max_quantity", {})
+except:
+    lot_sizes = {"NFO": 65, "BFO": 20}
+    max_quantity = {"NFO": 1755, "BFO": 2000}
 
 
+def _compute_ltp_and_pnl(kite, pos):
+    """
+    Fetch live LTP for a position and compute P&L locally using lot size.
+    Returns (ltp, pnl)
+    """
+    symbol = pos.get('tradingsymbol', '')
+    exchange = (pos.get('exchange') or '').upper()
+    avg_price = pos.get('average_price', 0) or 0
+    quantity = pos.get('quantity', 0) or 0
+
+    # default lot size multiplier (1 for non-F&O instruments)
+    lot_size = lot_sizes.get(exchange, 1)
+
+    # Start with the LTP provided in the position object as fallback
+    ltp = pos.get('last_price', 0) or 0
+    try:
+        if symbol and exchange:
+            quote_key = f\"{exchange}:{symbol}\"
+            quote_data = kite.quote([quote_key])
+            if quote_data and quote_key in quote_data:
+                ltp = quote_data[quote_key].get('last_price', ltp)
+    except Exception:
+        # ignore quote errors and keep fallback LTP
+        pass
+
+    # Compute P&L: (LTP - avg_price) * quantity * lot_size
+    try:
+        pnl = (ltp - avg_price) * quantity * lot_size
+    except Exception:
+        pnl = 0
+
+    return ltp, pnl
 def get_trading_mechanism_from_sheet(spreadsheet_id, gid):
     """Get Trading Mechanism value from row 4, cell B4."""
     import gspread
@@ -457,24 +498,25 @@ def print_positions_for_account(account, positions):
         product = pos.get('product', 'N/A')
         quantity = pos.get('quantity', 0)
         avg_price = pos.get('average_price', 0)
-        ltp = pos.get('last_price', 0)
-        pnl = pos.get('pnl', 0)
+
+        # Fetch fresh LTP and compute P&L locally
+        ltp, pnl = _compute_ltp_and_pnl(account.get('kite'), pos)
         total_pnl += pnl
-        
+
         # Format values
         qty_str = f"{quantity:+.0f}" if quantity != 0 else "0"
         avg_price_str = f"{avg_price:.2f}" if avg_price else "0.00"
         ltp_str = f"{ltp:.2f}" if ltp else "0.00"
         pnl_str = f"₹{pnl:+.2f}" if pnl else "₹0.00"
-        
-        # Color code P&L (positive/negative) - show in raw format
+
+        # Color code P&L (positive/negative)
         if pnl > 0:
             pnl_display = f"✓ {pnl_str}"
         elif pnl < 0:
             pnl_display = f"✗ {pnl_str}"
         else:
             pnl_display = pnl_str
-        
+
         status = "OPEN" if quantity != 0 else "CLOSED"
         print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display:<15}")
     
@@ -946,24 +988,25 @@ def print_positions_after_sync(account, positions):
         product = pos.get('product', 'N/A')
         quantity = pos.get('quantity', 0)
         avg_price = pos.get('average_price', 0)
-        ltp = pos.get('last_price', 0)
-        pnl = pos.get('pnl', 0)
+
+        # Fetch fresh LTP and compute P&L locally
+        ltp, pnl = _compute_ltp_and_pnl(account.get('kite'), pos)
         total_pnl += pnl
-        
+
         # Format values
         qty_str = f"{quantity:+.0f}" if quantity != 0 else "0"
         avg_price_str = f"{avg_price:.2f}" if avg_price else "0.00"
         ltp_str = f"{ltp:.2f}" if ltp else "0.00"
         pnl_str = f"₹{pnl:+.2f}" if pnl else "₹0.00"
-        
-        # Color code P&L (positive/negative) - show in raw format
+
+        # Color code P&L (positive/negative)
         if pnl > 0:
             pnl_display = f"✓ {pnl_str}"
         elif pnl < 0:
             pnl_display = f"✗ {pnl_str}"
         else:
             pnl_display = pnl_str
-        
+
         status = "OPEN" if quantity != 0 else "CLOSED"
         print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display:<15}")
     
