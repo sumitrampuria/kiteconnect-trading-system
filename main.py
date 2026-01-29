@@ -524,6 +524,8 @@ def print_positions_for_account(account, positions):
     total_api_str = f"₹{total_api_pnl:+,.2f}"
     total_cmp_str = f"₹{total_cmp_pnl:+,.2f}"
     print()
+    # separator line before totals
+    print(f"  {'─'*120}")
     # align totals under their columns; label placed under first column (Status)
     print(f"  {'Total P&L':<8} {'':<20} {'':<10} {'':<10} {'':<12} {'':<12} {'':<12} {total_api_str:<18} {total_cmp_str:<18}")
     print(f"{'─'*80}")
