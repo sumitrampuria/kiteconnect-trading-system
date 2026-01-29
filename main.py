@@ -509,15 +509,15 @@ def print_positions_for_account(account, positions):
         qty_str = f"{quantity:+.0f}" if quantity != 0 else "0"
         avg_price_str = f"{avg_price:.2f}" if avg_price else "0.00"
         ltp_str = f"{ltp:.2f}" if ltp else "0.00"
-        pnl_str = f"₹{pnl:+.2f}" if pnl else "₹0.00"
 
-        # Color code P&L (positive/negative)
-        if pnl > 0:
-            pnl_display = f"✓ {pnl_str}"
-        elif pnl < 0:
-            pnl_display = f"✗ {pnl_str}"
-        else:
-            pnl_display = pnl_str
+        # Prepare API and computed P&L strings
+        api_pnl_val = api_pnl
+        cmp_pnl_val = computed_pnl
+        api_str = f\"API ₹{api_pnl_val:+,.2f}\" if api_pnl_val is not None else \"API N/A\"
+        cmp_str = f\"CMP ₹{cmp_pnl_val:+,.2f}\"
+
+        # Combine into display string
+        pnl_display = f\"{api_str} / {cmp_str}\"
 
         status = "OPEN" if quantity != 0 else "CLOSED"
         print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display:<15}")
@@ -999,15 +999,15 @@ def print_positions_after_sync(account, positions):
         qty_str = f"{quantity:+.0f}" if quantity != 0 else "0"
         avg_price_str = f"{avg_price:.2f}" if avg_price else "0.00"
         ltp_str = f"{ltp:.2f}" if ltp else "0.00"
-        pnl_str = f"₹{pnl:+.2f}" if pnl else "₹0.00"
 
-        # Color code P&L (positive/negative)
-        if pnl > 0:
-            pnl_display = f"✓ {pnl_str}"
-        elif pnl < 0:
-            pnl_display = f"✗ {pnl_str}"
-        else:
-            pnl_display = pnl_str
+        # Prepare API and computed P&L strings
+        api_pnl_val = api_pnl
+        cmp_pnl_val = computed_pnl
+        api_str = f"API ₹{api_pnl_val:+,.2f}" if api_pnl_val is not None else "API N/A"
+        cmp_str = f"CMP ₹{cmp_pnl_val:+,.2f}"
+
+        # Combine into display string
+        pnl_display = f"{api_str} / {cmp_str}"
 
         status = "OPEN" if quantity != 0 else "CLOSED"
         print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display:<15}")
