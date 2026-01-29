@@ -472,7 +472,8 @@ def print_positions_after_sync(account, positions):
     )
     print(f"  {'-'*8} {'-'*20} {'-'*10} {'-'*10} {'-'*12} {'-'*12} {'-'*12} {'-'*15}")
     
-    total_pnl = 0
+    total_api_pnl = 0
+    total_cmp_pnl = 0
     for pos in all_positions:
         symbol = pos.get('tradingsymbol', 'N/A')
         exchange = pos.get('exchange', 'N/A')
@@ -498,33 +499,30 @@ def print_positions_after_sync(account, positions):
             computed_pnl = 0
         # Prefer API-provided P&L if present
         api_pnl = pos.get('pnl', None)
-        pnl = api_pnl if api_pnl is not None else computed_pnl
-        total_pnl += pnl
+        api_pnl_val = api_pnl if api_pnl is not None else 0
+        cmp_pnl_val = computed_pnl if computed_pnl is not None else 0
+        total_api_pnl += api_pnl_val
+        total_cmp_pnl += cmp_pnl_val
 
         qty_str = f"{quantity:+.0f}" if quantity != 0 else "0"
         avg_price_str = f"{avg_price:.2f}" if avg_price else "0.00"
         ltp_str = f"{ltp:.2f}" if ltp else "0.00"
 
         # Prepare API and computed P&L strings
-        api_pnl_val = api_pnl
-        cmp_pnl_val = computed_pnl
-        api_str = f"API ₹{api_pnl_val:+,.2f}" if api_pnl_val is not None else "API N/A"
+        api_str = f"API ₹{api_pnl_val:+,.2f}"
         cmp_str = f"CMP ₹{cmp_pnl_val:+,.2f}"
 
-        pnl_display = f"{api_str} / {cmp_str}"
+        pnl_display_api = api_str
+        pnl_display_cmp = cmp_str
 
         status = "OPEN" if quantity != 0 else "CLOSED"
-        print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display:<15}")
+        print(f"  {status:<8} {symbol:<20} {exchange:<10} {product:<10} {qty_str:<12} {avg_price_str:<12} {ltp_str:<12} {pnl_display_api:<18} {pnl_display_cmp:<18}")
     
-    print(f"\n  {'-'*100}")
-    total_pnl_str = f"₹{total_pnl:+.2f}"
-    if total_pnl > 0:
-        total_pnl_display = f"✓ Total P&L: {total_pnl_str}"
-    elif total_pnl < 0:
-        total_pnl_display = f"✗ Total P&L: {total_pnl_str}"
-    else:
-        total_pnl_display = f"Total P&L: {total_pnl_str}"
-    print(f"  {total_pnl_display}")
+    # Print totals for API and Computed P&L
+    total_api_str = f"API Total: ₹{total_api_pnl:+,.2f}"
+    total_cmp_str = f"CMP Total: ₹{total_cmp_pnl:+,.2f}"
+    print()
+    print(f"  {'':<8} {'':<20} {'':<10} {'':<10} {'':<12} {'':<12} {'':<12} {total_api_str:<18} {total_cmp_str:<18}")
     print(f"{'─'*80}")
 
 
